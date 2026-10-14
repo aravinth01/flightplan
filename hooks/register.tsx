@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { EditKind, Live, Route, View } from '../types'
+import type { EditKind, Live, Route, Step, View } from '../types'
 import { ROUTE_DESCRIPTION, ROUTE_SCHEMA, ROUTE_TOOL } from './contract'
 import {
   applyDecide,
@@ -10,9 +10,13 @@ import {
   applyStep,
   counts,
   deliverEdits,
+  hasReceipts,
   isClosed,
+  isStopVerified,
   isTestCommand,
+  landingOf,
   ownersOf,
+  printable,
   promptNote,
   readTestOutput,
   reconcile,
@@ -25,9 +29,11 @@ import {
 import type { Answer } from './model'
 import { drawLab } from './lab'
 import type { LabPage } from './lab'
-import { drawBand, drawPane } from './pane'
-import type { Actions, Elements } from './pane'
-import { activityFor } from './text'
+import { chipKindOf, drawBand, drawPane } from './pane'
+import type { Actions, ChipKind, Elements } from './pane'
+import { ONE_SHOT_MS, sceneKey } from './scene'
+import { activityFor, landingWords, say } from './text'
+import type { Voice, WordKey } from './text'
 
 // Flight Plan: a live map of what Claude is doing, beside the chat. Claude
 // files the route through the `route` tool; the map moves the plane on what
@@ -78,11 +84,12 @@ type Sound = 'tick' | 'chime' | 'knock' | 'fanfare'
 
 const clone = <T,>(value: T): T => JSON.parse(JSON.stringify(value)) as T
 
-const config: { departure: 'countdown' | 'go' | 'auto'; countdownSeconds: number; soundMode: 'all' | 'important' | 'off'; isCalm: boolean } = {
+const config: { departure: 'countdown' | 'go' | 'auto'; countdownSeconds: number; soundMode: 'all' | 'important' | 'off'; isCalm: boolean; voice: Voice } = {
   departure: 'countdown',
   countdownSeconds: 30,
   soundMode: 'all',
   isCalm: false,
+  voice: 'fun',
 }
 
 // Per-module memory (a reload starts these over; the route itself is in $.state).
@@ -132,6 +139,21 @@ function setLive($: EngineInterface, fn: (live: Live) => Partial<Live>) {
 
 function setView($: EngineInterface, fn: (view: View) => Partial<View>) {
   return update($, viewAtom, view => ({ ...(view ?? INITIAL_VIEW), ...fn(view ?? INITIAL_VIEW) }))
+}
+
+// The sky as it stands, one-shots aside (a calm key draws none).
+async function stillOf($: EngineInterface): Promise<string> {
+  const route = await read($, routeAtom)
+  const live = (await read($, liveAtom)) ?? INITIAL_LIVE
+
+  return JSON.stringify(sceneKey({ route, live, now: 0, columns: 80, isStrip: false, isCalm: true }))
+}
+
+// A change to the sky with no event time of its own (the turn ending, a
+// question answered, a route call that redraws a pin) is stamped, so a
+// one-shot running then is dropped instead of replayed by the new source.
+async function markChange($: EngineInterface, still: string, now: number) {
+  if ((await stillOf($)) !== still) await setLive($, () => ({ changedAt: now }))
 }
 
 // The route outlives the process: a resumed session, or an app restart, gets
@@ -193,11 +215,12 @@ async function debugLog($: EngineInterface) {
 
 // ------------------------------------------------------------ surface
 
-// Ticks and chimes share one limiter; the knock (Claude needs you) and the
-// landing fanfare always play.
-async function play($: EngineInterface, sound: Sound) {
+// Sounds pair with moments the map saw (motionRules §8): tick = a step's
+// receipts, chime = a stop with every step tested or a quiet landing, knock =
+// your turn, fanfare = a party landing only. Ticks and chimes share one
+// limiter; the knock (Claude needs you) and the landing always play.
+async function play($: EngineInterface, sound: Sound, isImportant = sound === 'knock' || sound === 'fanfare') {
   if (config.soundMode === 'off') return
-  const isImportant = sound === 'knock' || sound === 'fanfare'
   if (config.soundMode === 'important' && !isImportant) return
   const view = await read($, viewAtom)
   if (view?.isSoundOn === false) return
@@ -226,6 +249,121 @@ function toast($: EngineInterface, text: string) {
   } catch {
     // no surface to show it on
   }
+}
+
+// A toast shows wherever the session draws, so its emoji follow the
+// plainest of them: ✅ only when every surface is the desktop.
+async function toastSurface($: EngineInterface): Promise<string> {
+  const surfaces = await $.session.surfaces().catch(() => [])
+
+  return surfaces.length > 0 && surfaces.every(one => one === 'desktop') ? 'desktop' : 'terminal'
+}
+
+// A toast in the person's voice.
+async function tell($: EngineInterface, key: WordKey, vars: Record<string, string | number> = {}) {
+  toast($, say(key, config.voice, vars, await toastSurface($)))
+}
+
+// /flight replies are transcript lines, which Claude may read: they stay in
+// plain words and text marks whatever the voice (R12).
+const reply = (key: WordKey, vars: Record<string, string | number> = {}) => ({ text: say(key, 'plain', vars, 'terminal') })
+
+const SHOW_CHIP: Record<ChipKind, WordKey | null> = {
+  pending: null,
+  now: 'step.chip.now',
+  started: 'step.chip.started',
+  receipts: 'step.chip.checked',
+  youChecked: 'step.chip.youChecked',
+  claudeSays: 'step.chip.claudeSays',
+  untested: 'step.chip.done',
+  failed: 'step.chip.failed',
+  skipped: 'step.chip.skipped',
+  youSkipped: 'step.chip.youSkipped',
+  blocked: 'step.chip.blocked',
+  claudeDropped: 'step.chip.claudeDropped',
+  youRemoved: 'step.chip.youRemoved',
+}
+
+// One /flight show line: the mark, the title and the pane's own chip.
+function showLine(step: Step, isPlane: boolean): string {
+  const word = SHOW_CHIP[chipKindOf(step, isPlane)]
+  const mark = isPlane ? '✈' : isClosed(step) ? '✓' : step.status === 'removed' ? 'x' : 'o'
+
+  return say('cmd.show.line', 'plain', { mark, title: step.title, chip: word === null ? step.status : say(word, 'plain', {}, 'terminal') }, 'terminal')
+}
+
+// ------------------------------------------------------------ moments
+
+// Steps whose receipts (a test run the map saw pass) are new since `before`.
+function freshReceipts(before: Route | null, after: Route) {
+  return after.steps.filter(
+    step => hasReceipts(step) && step.checkedAt !== undefined && step.checkedAt !== before?.steps.find(one => one.id === step.id)?.checkedAt,
+  )
+}
+
+// The one-shots a change to the route starts, from the times the model
+// persisted, so this agrees with what scene.ts draws: a glide (or U-turn),
+// the take-off, a receipts stamp, the landing.
+function windowsOf(before: Route | null, after: Route | null): number[] {
+  if (after === null) return []
+  const out: number[] = []
+  if ((after.takeoffAt ?? 0) > (before?.takeoffAt ?? 0)) out.push(ONE_SHOT_MS.takeoff)
+  if (after.movedAt > (before?.movedAt ?? 0) && after.landedAt === 0) out.push(ONE_SHOT_MS.glide)
+  if (freshReceipts(before, after).length > 0) out.push(ONE_SHOT_MS.stamp)
+  if (after.landedAt > 0 && after.landedAt !== before?.landedAt) out.push(landingOf(after) === 'party' ? ONE_SHOT_MS.landingParty : ONE_SHOT_MS.landingQuiet)
+
+  return out
+}
+
+// A one-shot lives in the sky only inside its window (R4). Redraw now, and
+// once just after each window ends so the next draw drops it; the picture
+// never ticks between events.
+function redrawAfter($: EngineInterface, windows: readonly number[]) {
+  if (windows.length === 0) return
+  $.ui.invalidate('ui.render')
+  for (const ms of new Set(windows)) $.clock.after(ms + 50, () => $.ui.invalidate('ui.render'))
+}
+
+// New receipts tick, or chime when they complete a stop: one sound per
+// event, through the limiter. v1's glyph pose (terminal, band) cheers for
+// the stamp's window; the sky reads checkedAt itself.
+async function cheer($: EngineInterface, before: Route | null, after: Route | null, now: number) {
+  if (after === null || freshReceipts(before, after).length === 0) return
+  const isStopDone = after.features.some(feature => isStopVerified(after, feature.id) && (before === null || !isStopVerified(before, feature.id)))
+  await setLive($, () => ({ celebrateUntil: now + ONE_SHOT_MS.stamp }))
+  await play($, isStopDone ? 'chime' : 'tick')
+}
+
+// The landing, told honestly (R5): a party (every step tested, the last run
+// green) gets the fanfare and "we ate"; a quiet one a chime and what is still
+// untested; a failing one no sound, and the failing count.
+async function land($: EngineInterface, route: Route) {
+  const landing = landingOf(route)
+  if (landing === 'party') await play($, 'fanfare')
+  if (landing === 'quiet') await play($, 'chime', true)
+  toast($, landingWords(route, config.voice, await toastSurface($)).toast)
+}
+
+type Helper = Live['helpers'][number]
+
+// A helper's call has returned. One launched in the background is still out
+// working: it reports back at the end of its own run, under its agent id
+// (turn.complete). One that ran in the foreground is back, or hit a snag (an
+// error, or the call was refused). Coming back is never a check.
+function helperReturned(helper: Helper, ran: { deny?: string; isError?: boolean; result?: unknown }, now: number): Helper {
+  const launched = ran.result as { status?: unknown; agentId?: unknown } | undefined
+  const isError = ran.deny !== undefined || ran.isError === true
+  if (!isError && (launched?.status === 'async_launched' || launched?.status === 'remote_launched')) {
+    return typeof launched.agentId === 'string' ? { ...helper, id: launched.agentId } : helper
+  }
+
+  return { ...helper, isDone: true, doneAt: now, isError }
+}
+
+// Leaving the gate is the take-off; the sky plays it from takeoffAt.
+function leaveGate(route: Route, now: number) {
+  route.gate = 'go'
+  route.takeoffAt = now
 }
 
 // ------------------------------------------------------------ the lab
@@ -332,21 +470,24 @@ async function tick($: EngineInterface) {
 }
 
 // Exactly one Go per takeoff: the gate flips inside one state write, and only
-// the call that flipped it submits.
+// the call that flipped it submits. Take off and the countdown running out
+// both land here, so both stamp the take-off.
 async function takeOff($: EngineInterface): Promise<boolean> {
   stopCountdown()
+  const now = await $.clock.now()
   let isMine = false
   let first = ''
   await update($, routeAtom, current => {
     if (current === null || current.gate === 'go') return current
     isMine = true
     first = current.steps.find(step => step.status === 'pending' || step.status === 'active')?.title ?? ''
-    const next: Route = { ...current, gate: 'go' }
+    const next: Route = { ...current, gate: 'go', takeoffAt: now }
     return next
   })
   if (!isMine) return false
   await setView($, () => ({ isCountdown: false }))
   await persist($)
+  redrawAfter($, [ONE_SHOT_MS.takeoff])
   void $.prompt.submit({ text: `Go: take off and start the route${first === '' ? '' : ` with "${first}"`}.`, asUser: true }).catch(() => undefined)
 
   return true
@@ -370,22 +511,29 @@ async function hold($: EngineInterface): Promise<boolean> {
 
 async function editRoute($: EngineInterface, kind: EditKind, target: string, value: string): Promise<boolean> {
   const now = await $.clock.now()
+  const before = await read($, routeAtom)
+  const still = await stillOf($)
   const edit = await mutate($, r => userEdit(r, kind, target, value, now))
+  await markChange($, still, now)
   await setView($, view => ({ open: kind === 'rename' ? view.open : null, armedStop: null }))
   if (edit === undefined) return false
   const live = await read($, liveAtom)
   const route = await read($, routeAtom)
+  // Skipping the step the plane is on moves it on: the sky glides.
+  redrawAfter($, windowsOf(before, route))
   // On the map now; Claude reads it on its next tool result while working,
   // or with the next message while idle. Before takeoff it rides "Go".
-  toast(
+  await tell(
     $,
     kind === 'checked'
-      ? 'Marked as checked by you.'
-      : route?.gate === 'waiting' || route?.gate === 'held'
-        ? 'Changed on the map. Claude reads it when it takes off.'
-        : live?.isRunning
-          ? 'Changed on the map. Claude reads it on its next step.'
-          : 'Changed on the map. Claude reads it with your next message, or press Send now.',
+      ? 'toast.checkedByYou'
+      : kind === 'pause'
+        ? 'toast.pause.set'
+        : route?.gate === 'waiting' || route?.gate === 'held'
+          ? 'toast.changed.gate'
+          : live?.isRunning
+            ? 'toast.changed.flying'
+            : 'toast.changed.idle',
   )
 
   return true
@@ -395,7 +543,7 @@ async function sendNow($: EngineInterface) {
   const now = await $.clock.now()
   const text = await mutate($, r => deliverEdits(r, now, true))
   if (text === undefined) {
-    toast($, 'Nothing waiting to send.')
+    await tell($, 'toast.nothingToSend')
     return
   }
   void $.prompt.submit({ text: `${text}\nApply these now and update the map.`, asUser: true }).catch(() => undefined)
@@ -418,7 +566,7 @@ async function stopNow($: EngineInterface, stepId: string) {
     return { ...current, armedStop: isArmed ? null : stepId, open: isArmed ? null : current.open }
   })
   if (!isArmed) {
-    toast($, 'Press Stop now again to interrupt Claude. A file may be left half-edited; Claude is told to check.')
+    await tell($, 'toast.stopArm')
     return
   }
   const live = await read($, liveAtom)
@@ -440,7 +588,7 @@ async function where($: EngineInterface) {
   const forked = await $.model.fork({
     prompt: 'In three short plain-English lines for someone who does not code: what is done, what you are doing now, and what is next.',
   })
-  await setView($, () => ({ whereAnswer: forked.isAnswered ? forked.text.trim() : `Claude could not answer just now (${forked.reason}).` }))
+  await setView($, () => ({ whereAnswer: printable(forked.isAnswered ? forked.text.trim() : `Claude could not answer just now (${forked.reason}).`) }))
 }
 
 function actions($: EngineInterface): Actions {
@@ -456,8 +604,10 @@ function actions($: EngineInterface): Actions {
     edit: (kind, target, value) => void editRoute($, kind, target, value ?? ''),
     undo: editId => {
       void (async () => {
+        const still = await stillOf($)
         const isUndone = await mutate($, r => undoEdit(r, editId))
-        toast($, isUndone ? 'Undone before Claude saw it.' : 'Claude has already seen that change.')
+        await markChange($, still, await $.clock.now())
+        await tell($, isUndone ? 'toast.undo.ok' : 'toast.undo.late')
       })()
     },
     takeOff: () => void takeOff($),
@@ -468,7 +618,7 @@ function actions($: EngineInterface): Actions {
         const queued = route?.edits.find(edit => edit.kind === 'pause' && edit.state === 'queued')
         if (queued !== undefined) {
           await mutate($, r => undoEdit(r, queued.id))
-          toast($, 'Pause cancelled.')
+          await tell($, 'toast.pause.cancelled')
         } else await editRoute($, 'pause', 'route', '')
       })()
     },
@@ -519,7 +669,9 @@ export const register: Register = (on, options) => {
   config.countdownSeconds = typeof options.countdownSeconds === 'number' && options.countdownSeconds >= 5 ? Math.round(options.countdownSeconds) : 30
   config.soundMode = options.sounds === 'important' || options.sounds === 'off' ? options.sounds : 'all'
   config.isCalm = options.fun === 'calm'
-  const { departure, countdownSeconds, isCalm } = config
+  // The Words setting: a change reloads the module, so it is read once here.
+  config.voice = options.voice === 'plain' ? 'plain' : 'fun'
+  const { departure, countdownSeconds, isCalm, voice } = config
 
   on('session.start', async ($, e, next) => {
     await $.tool.register({ name: ROUTE_TOOL, description: ROUTE_DESCRIPTION, inputSchema: ROUTE_SCHEMA, isDeferred: false })
@@ -560,28 +712,33 @@ export const register: Register = (on, options) => {
     switch (word ?? '') {
       case 'go': {
         const isOff = await takeOff($)
-        return { text: isOff ? 'Taking off.' : 'No route is waiting at the gate.' }
+        return reply(isOff ? 'cmd.go.ok' : 'cmd.gate.none')
       }
       case 'hold': {
         const isHeld = await hold($)
-        return { text: isHeld ? 'Holding: change anything on the map, then press Take off.' : 'No route is waiting at the gate.' }
+        return reply(isHeld ? 'cmd.hold.ok' : 'cmd.gate.none')
       }
       case 'pause': {
-        if (route === null || route.landedAt > 0) return { text: 'No flight in progress.' }
+        if (route === null || route.landedAt > 0) return reply('cmd.pause.none')
         await editRoute($, 'pause', 'route', '')
-        return { text: 'Claude will finish the step it is on, update the map, and stop.' }
+        return reply('cmd.pause.ok')
       }
-      case 'details':
-        await setView($, view => ({ isDetailsOn: !view.isDetailsOn }))
-        return { text: 'Toggled details on the map.' }
+      case 'details': {
+        let isOn = false
+        await setView($, view => {
+          isOn = !view.isDetailsOn
+          return { isDetailsOn: isOn }
+        })
+        return reply(isOn ? 'cmd.details.on' : 'cmd.details.off')
+      }
       case 'sound':
         await setView($, () => ({ isSoundOn: rest !== 'off' }))
-        return { text: rest === 'off' ? 'Flight Plan sounds off.' : 'Flight Plan sounds on.' }
+        return reply(rest === 'off' ? 'cmd.sound.off' : 'cmd.sound.on')
       case 'show': {
-        if (route === null) return { text: 'No flight plan yet.' }
+        if (route === null) return reply('cmd.show.none')
         const c = counts(route)
-        const lines = route.steps.map(step => `${step.id === route.plane ? '✈' : isClosed(step) ? 'v' : step.status === 'removed' ? 'x' : 'o'} ${step.title} (${step.status})`)
-        return { text: [`${route.goal}: ${c.done} of ${c.total} done`, ...lines].join('\n') }
+        const lines = route.steps.map(step => showLine(step, step.id === route.plane))
+        return { text: [say('cmd.show.header', 'plain', { goal: route.goal, done: c.done, total: c.total }), ...lines].join('\n') }
       }
       case 'lab': {
         const opened = await openLab($)
@@ -589,7 +746,7 @@ export const register: Register = (on, options) => {
       }
       default: {
         const opened = await openPane($)
-        return { text: opened.isPlaced ? 'Flight Plan map opened.' : `The map is open but not on screen yet: ${opened.reason}` }
+        return opened.isPlaced ? reply('cmd.open.ok') : reply('cmd.open.offscreen', { reason: opened.reason ?? '' })
       }
     }
   })
@@ -617,7 +774,7 @@ export const register: Register = (on, options) => {
     const input = e as unknown as Record<string, unknown>
     const now = await $.clock.now()
     const before = await read($, routeAtom)
-    const checkedBefore = before === null ? 0 : counts(before).checked
+    const still = await stillOf($)
     let answer: Answer = { result: { ok: false, error: 'unknown op; use set, step, patch, decide or get' }, context: [] }
     let wasSet = false
 
@@ -650,16 +807,17 @@ export const register: Register = (on, options) => {
     })
 
     await persist($)
+    await markChange($, still, now)
     const after = await read($, routeAtom)
     if (wasSet && after !== null) {
       await setView($, () => ({ open: null }))
       void openPane($)
       if (after.gate === 'waiting') await armCountdown($, true)
     }
-    if (after !== null && counts(after).checked > checkedBefore) {
-      await setLive($, () => ({ celebrateUntil: now + 2500 }))
-      await play($, 'tick')
-    }
+    // A step start moves the plane at once (and a route that opens the gate
+    // takes off); a finish that names a test run the map saw stamps receipts.
+    redrawAfter($, windowsOf(before, after))
+    await cheer($, before, after, now)
 
     // A plugin tool answers text (or content blocks), never an object: the
     // engine checks the shape and turns anything else into a tool error.
@@ -704,28 +862,32 @@ export const register: Register = (on, options) => {
       }
     }
 
+    // Strings drawn as Text: a control character would make the engine refuse the pane.
     await setLive($, () => ({
-      activity: activityFor(tool, file, command, description),
+      activity: printable(activityFor(tool, file, command, description)),
       activityAt: now,
-      ...(command !== undefined ? { lastCommand: command } : {}),
+      ...(command !== undefined ? { lastCommand: printable(command) } : {}),
     }))
 
     if (e.tool === 'AskUserQuestion') {
-      await setLive($, () => ({ waiting: { question: e.questions[0]?.question ?? 'a question', toolUseId: e.tool_use_id } }))
+      // `at` times the sky's your-turn pop (scene.ts reads it); Live's type
+      // does not list it yet, so it rides along on the object.
+      const waiting = { question: printable(e.questions[0]?.question ?? 'a question'), toolUseId: e.tool_use_id, at: now }
+      await setLive($, () => ({ waiting }))
+      redrawAfter($, [ONE_SHOT_MS.ask])
       await play($, 'knock')
     }
     if (tool === 'Agent' || tool === 'Task') {
-      const about = 'description' in e && typeof e.description === 'string' ? e.description : 'a side task'
-      await setLive($, live => ({ helpers: [...live.helpers.filter(one => !one.isDone).slice(-4), { id: e.tool_use_id, description: about, isDone: false }] }))
+      const about = 'description' in e && typeof e.description === 'string' ? printable(e.description) : 'a side task'
+      await setLive($, live => ({ helpers: [...live.helpers.filter(one => !one.isDone).slice(-4), { id: e.tool_use_id, description: about, isDone: false, startedAt: now }] }))
     }
 
     // Leaving the departure gate early: the card collapses, edits still land.
     if (isWrite && route !== null && (route.gate === 'waiting' || route.gate === 'held')) {
       stopCountdown()
-      await mutate($, r => {
-        r.gate = 'go'
-      })
+      await mutate($, r => leaveGate(r, now))
       await setView($, () => ({ isCountdown: false }))
+      redrawAfter($, [ONE_SHOT_MS.takeoff])
     }
 
     const ran = await next(e)
@@ -733,8 +895,12 @@ export const register: Register = (on, options) => {
     const isError = isDenied || ran.isError === true
     const finished = await $.clock.now()
 
-    if (e.tool === 'AskUserQuestion') await setLive($, () => ({ waiting: null }))
-    if (tool === 'Agent' || tool === 'Task') await setLive($, live => ({ helpers: live.helpers.map(one => (one.id === e.tool_use_id ? { ...one, isDone: true } : one)) }))
+    if (e.tool === 'AskUserQuestion') {
+      const still = await stillOf($)
+      await setLive($, () => ({ waiting: null }))
+      await markChange($, still, finished)
+    }
+    if (tool === 'Agent' || tool === 'Task') await setLive($, live => ({ helpers: live.helpers.map(one => (one.id === e.tool_use_id ? helperReturned(one, ran, finished) : one)) }))
     await setLive($, live => ({ errorsInRow: isDenied ? live.errorsInRow : isError ? live.errorsInRow + 1 : 0, activityAt: finished }))
 
     const context: string[] = []
@@ -748,13 +914,11 @@ export const register: Register = (on, options) => {
         }
       }
     } else {
-      const checkedBefore = counts(route).checked
+      const before = route
+      const still = await stillOf($)
       if (isWrite && !isError) {
         const seen = await mutate($, r => seeWrite(r, file, finished))
-        if (seen?.kind === 'step' && seen.moved) {
-          await setLive($, () => ({ failedRuns: 0 }))
-          $.clock.after(1600, () => $.ui.invalidate('ui.render'))
-        }
+        if (seen?.kind === 'step' && seen.moved) await setLive($, () => ({ failedRuns: 0 }))
         if (seen?.kind === 'unplanned' && route.landedAt > 0) {
           turnWrites += 1
           if (turnWrites >= 2 && !nudged.has('no-route')) {
@@ -766,25 +930,24 @@ export const register: Register = (on, options) => {
       // Test evidence only from runs that actually ran in the foreground.
       if (command !== undefined && isTestCommand(command) && !isDenied && !isBackground) {
         const summary = readTestOutput(typeof ran.text === 'string' ? ran.text : '', isError)
-        const changed = await mutate($, r => seeTestRun(r, command, summary, finished))
+        await mutate($, r => seeTestRun(r, command, summary, finished))
         if (summary.isOk === false) await setLive($, live => ({ failedRuns: live.failedRuns + 1 }))
         if (summary.isOk === true) await setLive($, () => ({ failedRuns: 0 }))
+        // The third failing run in a row rolls the storm in (the card's turbulence).
+        const live = await read($, liveAtom)
+        if (summary.isOk === false && live?.isRunning === true && live.failedRuns === 3) redrawAfter($, [ONE_SHOT_MS.storm])
         const open = route.steps.filter(step => step.status === 'active' || step.status === 'done')
         if (summary.isOk === true && open.length > 0 && !nudged.has('tests')) {
           nudged.add('tests')
           context.push('Flight Plan: the checks ran. Before you reply, close the steps this run covered with one route step call (finish takes several ids; evidence: this run).')
         }
-        if ((changed ?? []).length > 0 && summary.isOk === true) await setLive($, () => ({ celebrateUntil: finished + 2500 }))
       }
+      // A write that moved the plane glides it; a run the map saw pass stamps
+      // the steps it covered, with a tick (or a chime for a whole stop).
+      await markChange($, still, finished)
       const after = await read($, routeAtom)
-      if (after !== null && counts(after).checked > checkedBefore) {
-        const isWaypointDone = after.features.some(feature => {
-          const steps = after.steps.filter(step => step.featureId === feature.id && step.status !== 'removed')
-          const was = route?.steps.filter(step => step.featureId === feature.id && step.status !== 'removed') ?? []
-          return steps.length > 0 && steps.every(step => step.status === 'checked') && !was.every(step => step.status === 'checked')
-        })
-        await play($, isWaypointDone ? 'chime' : 'tick')
-      }
+      redrawAfter($, windowsOf(before, after))
+      await cheer($, before, after, finished)
       // The fast lane: the person's changes ride Claude's very next tool
       // result. A refused call carries no context, so nothing is handed over.
       if (!isDenied) {
@@ -804,24 +967,30 @@ export const register: Register = (on, options) => {
     let route = await read($, routeAtom)
     if (route !== null && (route.gate === 'waiting' || route.gate === 'held')) {
       if (GO.test(e.text)) {
+        // A Go typed (or sent) by hand is a take-off too.
         stopCountdown()
-        await mutate($, r => {
-          r.gate = 'go'
-        })
+        const now = await $.clock.now()
+        await mutate($, r => leaveGate(r, now))
         await setView($, () => ({ isCountdown: false }))
+        redrawAfter($, [ONE_SHOT_MS.takeoff])
       } else if (route.gate === 'waiting') {
         // Anything else said at the gate holds it: the person is talking.
         await hold($)
       }
       route = await read($, routeAtom)
     }
-    const context = [...(e.context ?? []), promptNote(route)]
+    // Queued changes ride this prompt down: context added after `next` has
+    // resolved is never attached (the prompt has entered). A prompt that does
+    // not go through hands them back, still queued for the next one.
+    const now = await $.clock.now()
+    const edits = route === null ? [] : clone(route.edits)
+    const delivered = await mutate($, r => deliverEdits(r, now))
+    const context = [...(e.context ?? []), promptNote(route), ...(delivered === undefined ? [] : [delivered])]
     const submitted = await next({ ...e, context })
-    // Hand queued changes over only on a prompt that goes through.
-    if (route !== null && !('drop' in submitted)) {
-      const now = await $.clock.now()
-      const delivered = await mutate($, r => deliverEdits(r, now))
-      if (delivered !== undefined) return { ...submitted, context: [...(submitted.context ?? []), delivered] }
+    if (submitted.drop !== undefined && delivered !== undefined) {
+      await mutate($, r => {
+        r.edits = r.edits.map(edit => edits.find(one => one.id === edit.id) ?? edit)
+      })
     }
 
     return submitted
@@ -831,7 +1000,8 @@ export const register: Register = (on, options) => {
     const now = await $.clock.now()
     turnWrites = 0
     nudged.clear()
-    await setLive($, () => ({ isRunning: true, turnId: e.turnId, turnStartedAt: now, errorsInRow: 0, failedRuns: 0, activity: 'thinking', activityAt: now }))
+    // A landing kept its crew on the field; a new turn starts with none.
+    await setLive($, () => ({ isRunning: true, turnId: e.turnId, turnStartedAt: now, errorsInRow: 0, failedRuns: 0, activity: 'thinking', activityAt: now, helpers: [] }))
     const route = await read($, routeAtom)
     if (route?.isPaused === true && !route.edits.some(edit => edit.kind === 'pause' && edit.state === 'queued')) {
       await mutate($, r => {
@@ -844,29 +1014,39 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
-    if (e.agentId !== undefined) return ran
     const now = await $.clock.now()
+    if (e.agentId !== undefined) {
+      // A helper sent off in the background has reported back.
+      const live = await read($, liveAtom)
+      if (live?.helpers.some(one => one.id === e.agentId && !one.isDone) === true) {
+        const isError = e.reason === 'error' || e.reason === 'refusal'
+        await setLive($, current => ({ helpers: current.helpers.map(one => (one.id === e.agentId ? { ...one, isDone: true, doneAt: now, isError } : one)) }))
+      }
+      return ran
+    }
+    const before = await read($, routeAtom)
+    const still = await stillOf($)
     const landed = await mutate($, r => reconcile(r, now))
     const usage = await $.session.usage().catch(() => undefined)
-    await setLive($, () => ({
+    // The crew stay out for the landing (they cheer at a party); otherwise
+    // they are cleared with the turn.
+    await setLive($, current => ({
       isRunning: false,
       waiting: null,
       activity: '',
       activityAt: now,
-      helpers: [],
+      helpers: landed?.hasLanded === true ? current.helpers : [],
       cost: usage?.cost?.usd ?? null,
       contextPercent: usage?.context.percent ?? null,
     }))
+    await markChange($, still, now)
     await debugLog($)
     const route = await read($, routeAtom)
     if (route?.gate === 'waiting') await armCountdown($, false)
-    if (landed?.hasLanded === true) {
-      await setLive($, () => ({ celebrateUntil: now + 3000 }))
-      await play($, 'fanfare')
-      const failing = route?.tests !== null && route?.tests !== undefined && route.tests.failed > 0
-      toast($, failing ? `Landed, but the last test run had ${route?.tests?.failed} failing.` : 'Landed: every step on the route is done.')
-    } else if (landed !== undefined && landed.blocked > 0 && landed.open.length === landed.blocked) {
-      toast($, `Every step is done except ${landed.blocked} blocked. See the map.`)
+    redrawAfter($, windowsOf(before, route))
+    if (landed?.hasLanded === true && route !== null) await land($, route)
+    else if (landed !== undefined && landed.blocked > 0 && landed.open.length === landed.blocked) {
+      await tell($, 'toast.blockedLeft', { n: landed.blocked })
     }
 
     return ran
@@ -885,8 +1065,8 @@ export const register: Register = (on, options) => {
 
       return (
         <Box flexDirection="column">
-          <Text bold>{route?.goal ?? 'Flight Plan'}</Text>
-          <Text dimColor>{c === null ? 'No flight plan yet.' : `${c.done} of ${c.total} steps done`}</Text>
+          <Text bold>{route?.goal ?? say('pane.title', voice)}</Text>
+          <Text dimColor>{c === null ? say('mobile.none', voice) : say('mobile.count', voice, { done: c.done, total: c.total })}</Text>
         </Box>
       )
     }
@@ -901,7 +1081,7 @@ export const register: Register = (on, options) => {
 
     return drawPane(
       elements,
-      { route, live, view, now, columns: e.props.bodyColumns, isCompact: e.props.placement === 'inline', isCalm },
+      { route, live, view, now, columns: e.props.bodyColumns, isCompact: e.props.placement === 'inline', isCalm, voice, surface: e.surface },
       actions($),
     )
   })
@@ -936,7 +1116,7 @@ export const register: Register = (on, options) => {
     const table = $.ui.resolve(e)
     const band = drawBand(
       { Box: table.Box, Text: table.Text, Button: table.Button, Input: table.Input, Select: table.Select },
-      { route, live, view, now, columns: e.props.bodyColumns, isCompact: true, isCalm },
+      { route, live, view, now, columns: e.props.bodyColumns, isCompact: true, isCalm, voice, surface: e.surface },
       () => void openPane($),
       actions($),
     )
@@ -956,6 +1136,6 @@ export const register: Register = (on, options) => {
     const c = counts(route)
     if (step === undefined || c.position === 0) return next(e)
 
-    return next({ ...e, props: { ...e.props, message: `✈ Step ${c.position} of ${c.total} · ${step.title}` } })
+    return next({ ...e, props: { ...e.props, message: say('spinner.step', voice, { n: c.position, total: c.total, title: step.title }, e.surface) } })
   })
 }

@@ -1,14 +1,22 @@
 import type { BoxProps, ButtonProps, ElementConstructor, InputProps, RenderElement, SelectProps, SvgProps, TextProps } from 'claude-code'
 
 import type { Decision, Edit, EditKind, Feature, Live, Route, Step, View } from '../types'
-import { counts, featureSteps, impactText, isClosed, isUnapplied } from './model'
-import { CONFETTI, GLYPHS, SPRITES } from './sprites'
-import type { Pose } from './sprites'
-import { COPY, ago, gloss } from './text'
+import { GLYPHS } from './art'
+import type { Pose } from './art'
+import { counts, featureSteps, hasReceipts, impactText, isClosed, isStopVerified, isUnapplied, landingOf } from './model'
+import { ONE_SHOT_MS, clockOf, sceneAlt, sceneKey, sceneSize, sceneSvg, signCells, signOf } from './scene'
+import type { PinState, SceneKey } from './scene'
+import { ago, clockWord, gloss, landingWords, say } from './text'
+import type { ClockDetail, Voice, WordKey } from './text'
 
 // The map, drawn from plain state with the elements every remote surface
-// shares. Rules that keep the tree valid: Buttons hold strings and Text only;
-// the Svg is always a sibling leaf; no Text width; no per-side borders.
+// shares: the sky on top (the pixel picture on the desktop, two text lines
+// elsewhere), then the header, the card, and the route as boarding passes.
+// Rules that keep the tree valid: Buttons hold strings and Text only (chips
+// are sibling Text); one Svg at most, the sky, always a leaf; no Text width;
+// no per-side borders; Box widths are whole cells or equal shares (width 0,
+// flexGrow 1). Words come from text.ts in the person's voice; the few marks
+// and labels written here (FROM/TO, files:, check:) read the same in both.
 
 export type Elements = {
   Box: ElementConstructor<BoxProps>
@@ -50,9 +58,21 @@ export type Draw = {
   columns: number
   isCompact: boolean
   isCalm: boolean
+  /** The Words setting: light gen-z ('fun', the default) or plain. */
+  voice: Voice
+  /** Where it is drawn (desktop, terminal, vscode): the emoji are desktop-only. */
+  surface: string
 }
 
 type Card = 'empty' | 'ready' | 'now' | 'ask' | 'turbulence' | 'holding' | 'paused' | 'landed'
+
+type Say = (key: WordKey, vars?: Record<string, string | number>) => string
+
+// A line in the person's voice, with only the marks their surface draws.
+const wordsFor =
+  (d: Pick<Draw, 'voice' | 'surface'>): Say =>
+  (key, vars = {}) =>
+    say(key, d.voice, vars, d.surface)
 
 export function cardOf(route: Route | null, live: Live): Card {
   if (route === null || route.steps.length === 0) return 'empty'
@@ -66,6 +86,7 @@ export function cardOf(route: Route | null, live: Live): Card {
   return 'now'
 }
 
+// The plane's text glyph (terminal, calm, band): no picture to show the pose.
 export function poseOf(route: Route | null, live: Live, now: number): Pose {
   if (route === null) return 'parked'
   if (route.landedAt > 0) return 'landed'
@@ -79,32 +100,67 @@ export function poseOf(route: Route | null, live: Live, now: number): Pose {
   return 'cruise'
 }
 
-const CHIP: Record<Step['status'], string> = {
-  pending: '',
-  active: 'now',
-  done: 'done, not tested',
-  checked: 'checked',
-  failed: 'done? last test failed',
-  skipped: 'skipped',
-  blocked: 'blocked',
-  removed: 'removed',
+// ---------------------------------------------------------------- step chips
+
+export type ChipKind =
+  | 'pending'
+  | 'now'
+  | 'started'
+  | 'receipts'
+  | 'youChecked'
+  | 'claudeSays'
+  | 'untested'
+  | 'failed'
+  | 'skipped'
+  | 'youSkipped'
+  | 'blocked'
+  | 'claudeDropped'
+  | 'youRemoved'
+
+// The one honesty mapping for a step's chip. Receipts only for a test run
+// the map saw pass; "I checked it" stays the person's word and "done" stays
+// Claude's (or the map's), never a check.
+export function chipKindOf(step: Step, isPlane: boolean): ChipKind {
+  switch (step.status) {
+    case 'active':
+      return isPlane ? 'now' : 'started'
+    case 'done':
+      return step.doneBy === 'claude' && step.claim !== undefined && step.claim !== 'none' ? 'claudeSays' : 'untested'
+    case 'checked':
+      return hasReceipts(step) ? 'receipts' : 'youChecked'
+    case 'failed':
+      return 'failed'
+    case 'skipped':
+      return step.doneBy === 'you' ? 'youSkipped' : 'skipped'
+    case 'blocked':
+      return 'blocked'
+    case 'removed':
+      return step.removedBy === 'claude' ? 'claudeDropped' : 'youRemoved'
+    default:
+      return 'pending'
+  }
 }
 
-function stepChip(step: Step, isPlane: boolean): string {
-  if (step.status === 'done' && step.doneBy === 'claude') return step.claim !== undefined && step.claim !== 'none' ? 'done, Claude says' : 'done, not tested'
-  if (step.status === 'checked' && step.doneBy === 'you') return 'you checked it'
-  if (step.status === 'skipped' && step.doneBy === 'you') return 'skipped by you'
-  if (step.status === 'removed') return step.removedBy === 'claude' ? 'dropped by Claude' : 'removed by you'
-  if (step.status === 'active' && !isPlane) return 'started'
-
-  return CHIP[step.status]
+const CHIP: Record<ChipKind, { word: WordKey | null; glyph: string; color?: string }> = {
+  pending: { word: null, glyph: 'o' },
+  now: { word: 'step.chip.now', glyph: '*', color: 'claude' },
+  started: { word: 'step.chip.started', glyph: '*', color: 'claude' },
+  receipts: { word: 'step.chip.checked', glyph: '✓', color: 'success' },
+  youChecked: { word: 'step.chip.youChecked', glyph: '✓' },
+  claudeSays: { word: 'step.chip.claudeSays', glyph: '✓' },
+  untested: { word: 'step.chip.done', glyph: '✓' },
+  failed: { word: 'step.chip.failed', glyph: '!', color: 'warning' },
+  skipped: { word: 'step.chip.skipped', glyph: '-' },
+  youSkipped: { word: 'step.chip.youSkipped', glyph: '-' },
+  blocked: { word: 'step.chip.blocked', glyph: '#', color: 'warning' },
+  claudeDropped: { word: 'step.chip.claudeDropped', glyph: 'x' },
+  youRemoved: { word: 'step.chip.youRemoved', glyph: 'x' },
 }
 
-const stepGlyph = (step: Step) =>
-  ({ pending: 'o', active: '*', done: 'v', checked: 'v', failed: '!', skipped: '-', blocked: '#', removed: 'x' })[step.status]
-
-const chipColor = (step: Step) =>
-  step.status === 'checked' ? 'success' : step.status === 'failed' || step.status === 'blocked' ? 'warning' : step.status === 'active' ? 'claude' : undefined
+// Receipts that just landed: the step's chip flashes inverse for the
+// stamp's window (the sky stamps the pin over the same window).
+export const isFreshReceipts = (step: Step, now: number) =>
+  hasReceipts(step) && step.checkedAt !== undefined && now >= step.checkedAt && now - step.checkedAt < ONE_SHOT_MS.stamp
 
 export type Moment = 'gate' | 'flying' | 'idle'
 
@@ -114,404 +170,682 @@ export function momentOf(route: Route | null, live: Live): Moment {
   return live.isRunning ? 'flying' : 'idle'
 }
 
-function badgeText(edit: Edit, moment: Moment): { text: string; color: string } {
-  if (edit.state === 'acked') return { text: '✓✓ Claude has it', color: 'success' }
-  if (isUnapplied(edit)) return { text: 'Claude has not applied this yet', color: 'error' }
-  if (edit.state === 'delivered') return { text: '✓ sent to Claude', color: 'claude' }
-  const when = moment === 'gate' ? 'when it takes off' : moment === 'flying' ? 'on its next step' : 'with your next message'
+function badgeText(edit: Edit, moment: Moment, t: Say): { text: string; color: string } {
+  if (edit.state === 'acked') return { text: t('badge.acked'), color: 'success' }
+  if (isUnapplied(edit)) return { text: t('badge.unapplied'), color: 'error' }
+  if (edit.state === 'delivered') return { text: t('badge.delivered'), color: 'claude' }
+  const when = t(moment === 'gate' ? 'badge.when.gate' : moment === 'flying' ? 'badge.when.flying' : 'badge.when.idle')
 
-  return { text: `~ queued: Claude sees it ${when}`, color: 'warning' }
+  return { text: t('badge.queued', { when }), color: 'warning' }
 }
 
+// The stops the person sees numbered, as the sky pins them: those with a
+// live step, or one the person proposed (not capped at 8 like the pins).
+const liveStops = (route: Route) =>
+  route.features.filter(feature => feature.proposedBy === 'you' || route.steps.some(step => step.featureId === feature.id && step.status !== 'removed'))
+
+const rule = (columns: number, label: string) => {
+  const width = Math.max(10, Math.min(columns, 60))
+  const side = Math.max(2, Math.floor((width - label.length - 2) / 2))
+
+  return `${'─'.repeat(side)} ${label} ${'─'.repeat(side)}`
+}
+
+// ---------------------------------------------------------------- the pane
+
 export function drawPane(el: Elements, d: Draw, act: Actions): RenderElement {
-  const { Box, Text, Button, Input } = el
-  const { route, live, view, now } = d
-  const card = cardOf(route, live)
-  const pose = poseOf(route, live, now)
-  const showSvg = el.Svg !== undefined && !d.isCalm
-  const rule = (label: string) => {
-    const width = Math.max(10, Math.min(d.columns, 60))
-    const side = Math.max(2, Math.floor((width - label.length - 2) / 2))
+  const { Box } = el
+  const card = cardOf(d.route, d.live)
+  const header = d.route !== null && d.route.steps.length > 0 ? drawHeader(el, d, d.route, card) : []
 
-    return `${'─'.repeat(side)} ${label} ${'─'.repeat(side)}`
-  }
-  const planeEl = (size: number) =>
-    showSvg && el.Svg !== undefined ? (
-      <el.Svg source={SPRITES[pose]} alt={`The plane: ${pose === 'holding' ? 'waiting for you' : 'Claude is here'}`} width={size} height={size} isInteractive />
-    ) : (
-      <Text color="claude">{GLYPHS[pose]}</Text>
-    )
-  const editsFor = (target: string) => (route?.edits ?? []).filter(edit => edit.target === target && edit.state !== 'acked')
-  const isEditing = view.open !== null
-  const queuedCount = (route?.edits ?? []).filter(edit => edit.state === 'queued').length
-
-  // ---- header and bar
-  const header: RenderElement[] = []
-  if (route !== null && route.steps.length > 0) {
-    const c = counts(route)
-    const where =
-      card === 'landed' ? 'landed' : card === 'ready' ? 'ready for takeoff' : c.position > 0 ? `step ${c.position} of ${c.total}` : `${c.done} of ${c.total} done`
-    const isNew = route.addedCount > 0 && now - route.addedAt < 60_000
-    const tests = route.tests === null ? 'no tests yet' : route.tests.failed > 0 ? `${route.tests.failed} failing` : `${route.tests.passed} tests pass`
-    header.push(
-      <Box key="hdr" flexDirection="row" justifyContent="space-between" gap={1}>
-        <Text bold wrap="truncate-end">
-          {route.goal}
-        </Text>
-        <Text dimColor>{where}</Text>
-      </Box>,
-      <Box key="bar" flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={2}>
-        <Text>
-          <Text dimColor>[</Text>
-          <Text color="success">{'#'.repeat(c.done)}</Text>
-          <Text dimColor>{'.'.repeat(Math.max(0, c.left))}</Text>
-          <Text dimColor>{`] ${c.done} done · ~${c.left} left`}</Text>
-          {isNew ? <Text color="warning">{` +${route.addedCount} new`}</Text> : ''}
-        </Text>
-        <Text dimColor>{`${route.files.length} files · ${tests}`}</Text>
-      </Box>,
-    )
-  }
-
-  // ---- the card: one place to look for "is it ok"
-  const cardBox = (kind: Card, color: string, children: (RenderElement | string)[]) => (
-    <Box key={`card-${kind}`} flexDirection="column" borderStyle="round" borderColor={color} paddingX={1} marginTop={header.length > 0 ? 1 : 0}>
-      {children}
+  // The sky is the first child (R19), so its index never shifts; the rest
+  // keep v1's '' placeholders.
+  return (
+    <Box flexDirection="column" width={d.columns}>
+      {drawSky(el, d)}
+      {header}
+      {drawCard(el, d, act, card, header.length > 0)}
+      {addCard(el, d, act)}
+      {whereCard(el, d, act)}
+      {drawRoute(el, d, act, card)}
+      {legendBox(el, d)}
+      {footerBox(el, d, act)}
     </Box>
   )
-  const tagRow = (tag: string, color: string, rest: string, withPlane: boolean) => (
-    <Box key="tag" flexDirection="row" gap={1} alignItems="center">
-      {withPlane ? <Box key="card-plane" flexShrink={0}>{planeEl(26)}</Box> : ''}
-      <Text bold color={color}>
-        {tag}
+}
+
+// ---------------------------------------------------------------- the sky
+
+const SIGN_STYLE: Record<PinState, { color?: string; bold?: boolean; dimColor?: boolean }> = {
+  pending: { dimColor: true },
+  current: { color: 'claude', bold: true },
+  done: {},
+  verified: { color: 'success' },
+  failed: { color: 'warning' },
+  yours: { color: 'planMode' },
+}
+
+const PIN_MARK: Record<PinState, { mark: string; color?: string }> = {
+  pending: { mark: 'o' },
+  current: { mark: '✈', color: 'claude' },
+  done: { mark: '✓' },
+  verified: { mark: '✓', color: 'success' },
+  failed: { mark: '!', color: 'warning' },
+  yours: { mark: '+', color: 'planMode' },
+}
+
+// The clock row, then the picture and the signs under its pins (R1, R3,
+// R8). The picture's source comes from the scene key alone, so a redraw for
+// anything else (the clock word, activity, the countdown, an open editor)
+// hands the frame the same bytes and its animation keeps running. Inline
+// panes get the strip; the terminal and calm get two text lines instead.
+function drawSky(el: Elements, d: Draw): RenderElement {
+  const { Box, Text } = el
+  const Svg = d.isCalm ? undefined : el.Svg
+  const key = sceneKey({ route: d.route, live: d.live, now: d.now, columns: d.columns, isStrip: d.isCompact, isCalm: Svg === undefined })
+  if (Svg === undefined) {
+    return (
+      <Box key="sky" flexDirection="column">
+        {clockRow(el, d, key)}
+        {glyphRoute(el, d, key)}
+      </Box>
+    )
+  }
+  const size = sceneSize(d.columns, d.isCompact)
+  const { left, right } = signCells(key, size.cells)
+  const n = key.pins.length
+  // Each sign keeps one free cell in its share, so neighbours never run
+  // together, and needs room for 3 more to say anything.
+  const room = n > 0 ? Math.floor((size.cells - left - right) / n) - 1 : 0
+  const hasSigns = n > 0 && room >= 3
+
+  return (
+    <Box key="sky" flexDirection="column" flexShrink={0}>
+      {clockRow(el, d, key)}
+      <Svg source={sceneSvg(key)} alt={sceneAlt(key)} width={size.pxW} height={size.pxH} isInteractive />
+      {hasSigns ? (
+        <Box key="signs" flexDirection="row" width={size.cells}>
+          {left > 0 ? <Box key="signs-left" width={left} flexShrink={0} /> : ''}
+          {key.pins.map((pin, i) => (
+            <Box key={`sign-${i}`} width={0} flexGrow={1} flexDirection="row" justifyContent="center">
+              <Text {...SIGN_STYLE[pin.state]} wrap="truncate-end">
+                {fitSign(pin.sign, room)}
+              </Text>
+            </Box>
+          ))}
+          {right > 0 ? <Box key="signs-right" width={right} flexShrink={0} /> : ''}
+        </Box>
+      ) : (
+        ''
+      )}
+    </Box>
+  )
+}
+
+// A sign cut to `room` cells with an ellipsis, whole characters only (a
+// sign may hold any script; a wide one still truncates in the Text).
+function fitSign(sign: string, room: number): string {
+  const chars = [...sign]
+  if (chars.length <= room) return sign
+
+  return `${chars.slice(0, Math.max(1, room - 1)).join('')}…`
+}
+
+// "☀ 10:20 AM · cruising": sky time (it moves only when steps close, never
+// in seconds) as a chip, then the voiced word for the moment.
+function clockRow(el: Elements, d: Draw, key: SceneKey): RenderElement {
+  const { Text } = el
+  const { route, view } = d
+  const c = route === null ? undefined : counts(route)
+  const detail: ClockDetail = {
+    gate: route?.gate === 'held' ? 'held' : view.isCountdown ? 'countdown' : 'waiting',
+    done: c?.done,
+    total: c?.total,
+    moment: clockMoment(route, d.live, d.now),
+    surface: d.surface,
+  }
+  if (route !== null && route.landedAt > 0) detail.landing = landingOf(route)
+
+  return (
+    <Text key="clock" wrap="truncate-end">
+      <Text inverse color="claude">{` ☀ ${clockOf(route).label} `}</Text>
+      <Text dimColor>{' · '}</Text>
+      <Text bold>{clockWord(key.pose, d.voice, detail)}</Text>
+    </Text>
+  )
+}
+
+// The clock word for a moment the pane times itself: a step's fresh
+// receipts, a route that grew in the last minute, the plane just moving,
+// or five quiet seconds. Text only, so the picture never changes for it.
+function clockMoment(route: Route | null, live: Live, now: number): ClockDetail['moment'] {
+  if (route === null) return undefined
+  if (route.steps.some(step => isFreshReceipts(step, now))) return 'receipts'
+  if (route.addedCount > 0 && now - route.addedAt < 60_000) return 'grew'
+  if (now - route.movedAt < 1500) return 'moved'
+  if (live.isRunning && now - live.activityAt > 5000) return 'thinking'
+
+  return undefined
+}
+
+// The text sky: one mark per pin, the plane on its way to the current one
+// (or at the gate), and the landing flag: "✓ · ✈ · o · ⚑".
+function glyphRoute(el: Elements, d: Draw, key: SceneKey): RenderElement {
+  const { Text } = el
+  const plane = GLYPHS[poseOf(d.route, d.live, d.now)]
+  const marks: { mark: string; color?: string }[] = [
+    ...(key.pose === 'empty' || key.atGate ? [{ mark: plane, color: 'claude' }] : []),
+    ...key.pins.map(pin => (pin.state === 'current' ? { mark: plane, color: 'claude' } : PIN_MARK[pin.state])),
+    key.landing === 'party' ? { mark: '⚑', color: 'success' } : key.landing === 'amber' ? { mark: '⚑', color: 'warning' } : { mark: '⚑' },
+  ]
+  const sep = marks.length * 4 <= d.columns ? ' · ' : ' '
+  const parts: RenderElement[] = []
+  marks.forEach((one, i) => {
+    if (i > 0) parts.push(<Text dimColor>{sep}</Text>)
+    parts.push(
+      <Text color={one.color} dimColor={one.color === undefined}>
+        {one.mark}
+      </Text>,
+    )
+  })
+
+  return (
+    <Text key="line" wrap="truncate-end">
+      {parts}
+    </Text>
+  )
+}
+
+// ---------------------------------------------------------------- header
+
+function drawHeader(el: Elements, d: Draw, route: Route, card: Card): RenderElement[] {
+  const { Box, Text } = el
+  const t = wordsFor(d)
+  const c = counts(route)
+  const where =
+    card === 'landed'
+      ? t('header.where.landed')
+      : card === 'ready'
+        ? t('header.where.ready')
+        : c.position > 0
+          ? t('header.where.step', { n: c.position, total: c.total })
+          : t('header.where.count', { done: c.done, total: c.total })
+  const isNew = route.addedCount > 0 && d.now - route.addedAt < 60_000
+  const tests =
+    route.tests === null
+      ? t('header.tests.none')
+      : route.tests.failed > 0
+        ? t('header.tests.failing', { n: route.tests.failed })
+        : t('header.tests.pass', { n: route.tests.passed })
+
+  return [
+    <Box key="hdr" flexDirection="row" justifyContent="space-between" gap={1}>
+      <Text bold wrap="truncate-end">
+        {route.goal}
       </Text>
-      <Text wrap="wrap">{rest}</Text>
-    </Box>
-  )
-  const buttons = (children: RenderElement[]) => (
-    <Box key="btns" flexDirection="row" flexWrap="wrap" gap={1} marginTop={0}>
-      {children}
-    </Box>
-  )
-  let cardEl: RenderElement
-  const planeStep = route?.steps.find(step => step.id === route.plane)
-  const withCardPlane = d.isCompact || card !== 'now'
+      <Text dimColor>{where}</Text>
+    </Box>,
+    <Box key="bar" flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={2}>
+      <Text>
+        <Text dimColor>[</Text>
+        <Text color="success">{'#'.repeat(c.done)}</Text>
+        <Text dimColor>{'.'.repeat(Math.max(0, c.left))}</Text>
+        <Text dimColor>{`] ${t('header.bar', { done: c.done, left: c.left })}`}</Text>
+        {isNew ? <Text color="warning">{t('header.grew', { n: route.addedCount })}</Text> : ''}
+      </Text>
+      <Text dimColor>{t('header.files', { n: route.files.length, tests })}</Text>
+    </Box>,
+  ]
+}
+
+// ---------------------------------------------------------------- the card
+
+// What the captain (Claude) is up to, as the card's chip.
+function captainChip(card: Card, route: Route | null, live: Live, now: number): WordKey {
   switch (card) {
     case 'empty':
-      cardEl = cardBox('empty', 'subtle', [tagRow('ON THE GROUND', 'subtle', '', true), <Text key="t" dimColor wrap="wrap">{COPY.empty}</Text>])
-      break
+      return 'captain.chip.empty'
+    case 'ready':
+      return 'captain.chip.ready'
+    case 'ask':
+    case 'holding':
+      return 'captain.chip.waiting'
+    case 'turbulence':
+      return 'captain.chip.bumpy'
+    case 'paused':
+      return 'captain.chip.paused'
+    case 'landed':
+      return 'captain.chip.landed'
+    default:
+      if (route !== null && route.steps.some(step => isFreshReceipts(step, now))) return 'captain.chip.receipts'
+      if (route !== null && now - route.movedAt < 1500) return 'captain.chip.flying'
+      if (now - live.activityAt > 5000) return 'captain.chip.thinking'
+
+      return 'captain.chip.cruise'
+  }
+}
+
+// One place to look for "is it ok": the tag, the captain's chip, a
+// headline, a hint and the buttons for this moment.
+function drawCard(el: Elements, d: Draw, act: Actions, card: Card, hasHeader: boolean): RenderElement {
+  const { Box, Text, Button } = el
+  const t = wordsFor(d)
+  const { route, live, view, now } = d
+  const planeStep = route?.steps.find(step => step.id === route.plane)
+  const queuedCount = (route?.edits ?? []).filter(edit => edit.state === 'queued').length
+  const box = (color: string, tag: string, rows: (RenderElement | string)[]) => (
+    <Box key={`card-${card}`} flexDirection="column" borderStyle="round" borderColor={color} paddingX={1} marginTop={hasHeader ? 1 : 0}>
+      <Box key="tag" flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={1}>
+        <Text bold color={color}>
+          {tag}
+        </Text>
+        <Text backgroundColor={color} color="inverseText" wrap="truncate-end">
+          {` ${t('captain.row', { chip: t(captainChip(card, route, live, now)) })} `}
+        </Text>
+      </Box>
+      {rows}
+    </Box>
+  )
+  const line = (key: string, text: string, isDim = false) =>
+    text === '' ? (
+      ''
+    ) : (
+      <Text key={key} dimColor={isDim} wrap="wrap">
+        {text}
+      </Text>
+    )
+  const buttons = (children: RenderElement[]) => (
+    <Box key="btns" flexDirection="row" flexWrap="wrap" gap={1}>
+      {children}
+    </Box>
+  )
+
+  switch (card) {
+    case 'empty':
+      return box('subtle', t('card.empty.tag'), [line('t', t('card.empty.body'), true)])
     case 'ready': {
-      const c = counts(route as Route)
-      const clock = route?.gate === 'held' ? 'held' : !view.isCountdown ? 'waiting for Take off' : view.open !== null ? `clock paused while you edit (${view.countdown} s)` : `taking off in ${view.countdown} s`
-      cardEl = cardBox('ready', 'planMode', [
-        tagRow('READY FOR TAKEOFF', 'planMode', `${c.total} steps under ${(route as Route).features.length} waypoints · ${clock}`, true),
-        <Text key="hint" dimColor wrap="wrap">{route?.gate === 'held' ? COPY.holdHint : COPY.readyHint}</Text>,
+      const r = route as Route
+      const clock =
+        r.gate === 'held'
+          ? t('card.ready.clock.held')
+          : !view.isCountdown
+            ? t('card.ready.clock.waitGo')
+            : view.open !== null
+              ? t('card.ready.clock.editing', { n: view.countdown })
+              : t('card.ready.clock.countdown', { n: view.countdown })
+
+      return box('planMode', t('card.ready.tag'), [
+        line('head', t('card.ready.summary', { total: counts(r).total, stops: liveStops(r).length, clock })),
+        line('hint', t(r.gate === 'held' ? 'card.ready.hintHeld' : 'card.ready.hint'), true),
         buttons([
-          <Button key="takeoff" label="Take off now" variant="primary" onPress={() => act.takeOff()} />,
-          ...(route?.gate === 'held' ? [] : [<Button key="hold" label="Hold, let me look" onPress={() => act.hold()} />]),
+          <Button key="takeoff" label={t('btn.takeoff')} variant="primary" onPress={() => act.takeOff()} />,
+          ...(r.gate === 'held' ? [] : [<Button key="hold" label={t('btn.hold')} onPress={() => act.hold()} />]),
         ]),
       ])
-      break
     }
     case 'ask':
-      cardEl = cardBox('ask', 'permission', [
-        tagRow('YOUR TURN', 'permission', `Claude asks: ${live.waiting?.question ?? 'a question'}`, true),
-        <Text key="hint" dimColor wrap="wrap">{COPY.waitingQuestion}</Text>,
-        buttons([<Button key="showq" label="Show me" onPress={() => act.showQuestion()} />]),
+      return box('permission', t('card.ask.tag'), [
+        line('head', t('card.ask.summary', { question: live.waiting?.question ?? t('card.ask.fallback') })),
+        line('hint', t('card.ask.hint'), true),
+        buttons([<Button key="showq" label={t('btn.showQuestion')} onPress={() => act.showQuestion()} />]),
       ])
-      break
     case 'turbulence':
-      cardEl = cardBox('turbulence', 'warning', [
-        tagRow('TURBULENCE', 'warning', `${live.failedRuns} test runs in a row failed on "${planeStep?.title ?? 'this step'}"`, true),
-        <Text key="hint" dimColor wrap="wrap">{COPY.turbulence}</Text>,
+      return box('warning', t('card.turbulence.tag'), [
+        line('head', t('card.turbulence.summary', { n: live.failedRuns, title: planeStep?.title ?? t('card.turbulence.fallbackTitle') })),
+        line('hint', t('card.turbulence.hint'), true),
         buttons([
-          <Button key="nudge" label="Try another way" onPress={() => act.nudge()} />,
-          ...(planeStep !== undefined ? [<Button key="skipstuck" label="Skip this step" onPress={() => act.edit('skip', planeStep.id)} />] : []),
+          <Button key="nudge" label={t('btn.nudge')} onPress={() => act.nudge()} />,
+          ...(planeStep !== undefined ? [<Button key="skipstuck" label={t('btn.skipStuck')} onPress={() => act.edit('skip', planeStep.id)} />] : []),
         ]),
       ])
-      break
     case 'holding': {
-      const open = (route?.steps ?? []).filter(step => step.status === 'active' || step.status === 'pending' || step.status === 'failed')
-      const unclosed = (route?.steps ?? []).filter(step => step.status === 'active')
-      const blockedCount = (route?.steps ?? []).filter(step => step.status === 'blocked').length
-      cardEl = cardBox('holding', 'subtle', [
-        tagRow('HOLDING', 'subtle', planeStep !== undefined ? `at "${planeStep.title}"` : `${open.length} steps to go`, true),
-        <Text key="hint" dimColor wrap="wrap">
-          {blockedCount > 0 ? `${blockedCount} step${blockedCount > 1 ? 's are' : ' is'} blocked; ${COPY.holdingIdle}.` : unclosed.length > 0 ? `Claude stopped with ${unclosed.length} step${unclosed.length > 1 ? 's' : ''} not closed on the map; ${COPY.holdingIdle}.` : `${COPY.holdingIdle}.`}
-        </Text>,
+      const steps = route?.steps ?? []
+      const open = steps.filter(step => step.status === 'active' || step.status === 'pending' || step.status === 'failed')
+      const unclosed = steps.filter(step => step.status === 'active').length
+      const blocked = steps.filter(step => step.status === 'blocked').length
+      const idle = t('card.holding.idle')
+
+      return box('subtle', t('card.holding.tag'), [
+        line('head', planeStep !== undefined ? t('card.holding.at', { title: planeStep.title }) : t('card.holding.toGo', { n: open.length })),
+        line(
+          'hint',
+          blocked > 0 ? t('card.holding.blocked', { n: blocked, idle }) : unclosed > 0 ? t('card.holding.unclosed', { n: unclosed, idle }) : idle,
+          true,
+        ),
         buttons([
-          <Button key="resume" label="Continue" variant="primary" onPress={() => act.resume()} />,
-          ...(unclosed.length > 0 ? [<Button key="askupdate" label="Ask Claude to update the map" onPress={() => act.askToUpdate()} />] : []),
-          ...(queuedCount > 0 ? [<Button key="sendnow" label={`Send ${queuedCount} change${queuedCount > 1 ? 's' : ''} now`} onPress={() => act.sendNow()} />] : []),
+          <Button key="resume" label={t('btn.continue')} variant="primary" onPress={() => act.resume()} />,
+          ...(unclosed > 0 ? [<Button key="askupdate" label={t('btn.askUpdate')} onPress={() => act.askToUpdate()} />] : []),
+          ...(queuedCount > 0 ? [<Button key="sendnow" label={t('btn.sendCount', { n: queuedCount })} onPress={() => act.sendNow()} />] : []),
         ]),
       ])
-      break
     }
     case 'paused':
-      cardEl = cardBox('paused', 'subtle', [
-        tagRow('PAUSED', 'subtle', planeStep !== undefined ? `after "${planeStep.title}"` : '', true),
-        buttons([<Button key="resume" label="Continue" variant="primary" onPress={() => act.resume()} />]),
+      return box('subtle', t('card.paused.tag'), [
+        line('head', planeStep !== undefined ? t('card.paused.after', { title: planeStep.title }) : ''),
+        line('hint', t('card.paused.hint'), true),
+        buttons([<Button key="resume" label={t('btn.continue')} variant="primary" onPress={() => act.resume()} />]),
       ])
-      break
     case 'landed': {
       const r = route as Route
-      const c = counts(r)
-      const untested = r.steps.filter(step => step.status === 'done')
+      const landing = landingOf(r)
+      // TOUCHDOWN and "we ate" only on a party landing (landingWords).
+      const words = landingWords(r, d.voice, d.surface)
+      const untested = r.steps.filter(step => step.status === 'done').length
       const flagged = r.decisions.filter(decision => decision.state === 'flagged')
       const minutes = Math.max(1, Math.round((r.landedAt - r.setAt) / 60_000))
-      cardEl = cardBox('landed', 'success', [
-        tagRow('LANDED', 'success', `${c.total} steps · ${r.files.length} files · ${r.tests === null ? 'no tests seen' : r.tests.failed > 0 ? `${r.tests.passed} passing, ${r.tests.failed} failing` : `${r.tests.passed} tests passing`} · ${minutes} min`, true),
-        ...(untested.length > 0
+      const tests =
+        r.tests === null
+          ? t('card.landed.tests.none')
+          : r.tests.failed > 0
+            ? t('card.landed.tests.mixed', { passed: r.tests.passed, failed: r.tests.failed })
+            : t('card.landed.tests.pass', { passed: r.tests.passed })
+
+      return box(landing === 'party' ? 'success' : landing === 'amber' ? 'warning' : 'subtle', words.tag, [
+        <Text key="head" bold wrap="wrap">
+          {words.headline}
+        </Text>,
+        line('sum', t('card.landed.summary', { total: counts(r).total, files: r.files.length, tests, min: minutes }), true),
+        ...(untested > 0
           ? [
               <Box key="untested" flexDirection="row" gap={1} flexWrap="wrap">
-                <Text>{`${untested.length} done but not tested`}</Text>
-                <Button key="askcheck" label="Ask Claude to check" onPress={() => act.askToCheck()} />
+                <Text>{t('card.landed.untested', { n: untested })}</Text>
+                <Button key="askcheck" label={t('btn.askCheck')} onPress={() => act.askToCheck()} />
               </Box>,
             ]
           : []),
         ...(flagged.length > 0
           ? [
               <Box key="flagged" flexDirection="row" gap={1} flexWrap="wrap">
-                <Text>{`${flagged.length} choice${flagged.length > 1 ? 's' : ''} to review`}</Text>
-                <Button key="review" label="Review" onPress={() => act.open(flagged[0]?.id ?? null)} />
+                <Text>{t('card.landed.flagged', { n: flagged.length })}</Text>
+                <Button key="review" label={t('btn.review')} onPress={() => act.open(flagged[0]?.id ?? null)} />
               </Box>,
             ]
           : []),
-        ...(live.cost !== null ? [<Text key="cost" dimColor>{`This flight's session cost so far: $${live.cost.toFixed(2)}`}</Text>] : []),
+        ...(live.cost !== null ? [<Text key="cost" dimColor>{t('card.landed.cost', { cost: live.cost.toFixed(2) })}</Text>] : []),
       ])
-      break
     }
     default: {
       const details = view.isDetailsOn
         ? [
-            <Text key="files" dimColor wrap="wrap">{`working in: ${planeStep !== undefined && planeStep.files.length > 0 ? planeStep.files.join('  ') : '—'}`}</Text>,
+            <Text key="files" dimColor wrap="wrap">
+              {t('details.workingIn', { files: planeStep !== undefined && planeStep.files.length > 0 ? planeStep.files.join('  ') : '—' })}
+            </Text>,
             <Text key="cmd" dimColor wrap="wrap">
-              {live.lastCommand === '' ? 'last command: none yet' : `last command: ${live.lastCommand.slice(0, 60)} → ${gloss(live.lastCommand)}`}
+              {live.lastCommand === '' ? t('details.lastCommand.none') : t('details.lastCommand', { cmd: live.lastCommand.slice(0, 60), gloss: gloss(live.lastCommand) })}
             </Text>,
             ...(route?.tests !== null && route?.tests !== undefined
-              ? [<Text key="tests" dimColor>{`last test run: ${route.tests.passed} passed, ${route.tests.failed} failed`}</Text>]
+              ? [<Text key="tests" dimColor>{t('details.lastTest', { passed: route.tests.passed, failed: route.tests.failed })}</Text>]
               : []),
           ]
         : []
-      cardEl = cardBox('now', 'claude', [
-        tagRow('NOW', 'claude', route?.doing !== '' && route?.doing !== undefined ? route.doing : (planeStep?.title ?? 'getting started'), withCardPlane),
+
+      return box('claude', t('card.now.tag'), [
+        line('head', route?.doing !== '' && route?.doing !== undefined ? route.doing : (planeStep?.title ?? t('card.now.fallback'))),
         <Text key="activity" dimColor wrap="truncate-end">
-          {`${live.activity === '' ? 'thinking' : live.activity} · ${ago(now - live.activityAt)} ago`}
+          {t('card.now.activity', { activity: live.activity === '' ? t('activity.thinking') : live.activity, ago: ago(now - live.activityAt) })}
         </Text>,
         ...details,
         buttons([
-          <Button key="pause" label={route?.isPaused ? 'Pausing after this step' : 'Pause after this step'} hotkey={isEditing ? undefined : 'p'} onPress={() => act.pause()} />,
-          <Button key="addwp" label="Add a feature" onPress={() => act.open('add-feature')} />,
-          <Button key="where" label="Where?" onPress={() => act.where()} />,
+          <Button
+            key="pause"
+            label={t(route?.isPaused === true ? 'btn.pausing' : 'btn.pause')}
+            hotkey={view.open !== null ? undefined : 'p'}
+            onPress={() => act.pause()}
+          />,
+          <Button key="addwp" label={t('btn.addStop')} onPress={() => act.open('add-feature')} />,
+          <Button key="where" label={t('btn.where')} onPress={() => act.where()} />,
         ]),
       ])
     }
   }
-
-  // ---- the route
-  const routeRows: RenderElement[] = []
-  if (route !== null && route.steps.length > 0 && !(d.isCompact && card === 'now')) {
-    routeRows.push(<Text key="rule-route" dimColor>{rule('route')}</Text>)
-    route.features.forEach((feature, featureIndex) => {
-      routeRows.push(...featureRows(el, d, act, route, feature, featureIndex, card, showSvg, pose))
-      for (const decision of route.decisions.filter(one => one.afterFeature === feature.id)) {
-        routeRows.push(...decisionRows(el, d, act, route, decision))
-      }
-    })
-    routeRows.push(
-      <Box key="landing" flexDirection="row" gap={1}>
-        <Text color={card === 'landed' ? 'success' : undefined}>⚑</Text>
-        <Text>Landing: everything checked</Text>
-        {card === 'landed' && showSvg && el.Svg !== undefined ? <el.Svg source={CONFETTI} alt="confetti" width={22} height={22} isInteractive /> : ''}
-      </Box>,
-    )
-  }
-  if (d.isCompact && card === 'now' && route !== null) {
-    const next = route.steps.find(step => step.status === 'pending')
-    if (next !== undefined) routeRows.push(<Text key="next" dimColor wrap="truncate-end">{`next: ${next.title}`}</Text>)
-  }
-
-  // ---- add-a-feature card
-  const addCard =
-    view.open === 'add-feature' && route !== null ? (
-      <Box key="add-card" flexDirection="column" borderStyle="round" borderColor="planMode" paddingX={1} marginTop={1}>
-        <Input
-          key="add-feature"
-          label="New feature"
-          placeholder="e.g. Let people reset their password"
-          submitLabel="add"
-          onSubmit={value => act.edit('add-feature', 'route', value)}
-        />
-        <Box key="add-btns" flexDirection="row" gap={1}>
-          <Button key="add-close" label="Close" onPress={() => act.open(null)} />
-        </Box>
-        <Text key="add-hint" dimColor wrap="wrap">
-          It appears as "proposed by you" until Claude plans its steps.
-        </Text>
-      </Box>
-    ) : (
-      ''
-    )
-
-  // ---- where are we? answer, legend, footer
-  const whereCard =
-    view.whereAnswer !== '' ? (
-      <Box key="where-card" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1} marginTop={1}>
-        <Text bold>Where are we?</Text>
-        <Text wrap="wrap">{view.whereAnswer}</Text>
-        <Button key="where-close" label="Close" onPress={() => act.dismissWhere()} />
-      </Box>
-    ) : (
-      ''
-    )
-  const legend = view.isLegendOn ? (
-    <Box key="legend" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1} marginTop={1}>
-      {COPY.legend.map((line, index) => (
-        <Text key={`lg-${index}`} dimColor>
-          {line}
-        </Text>
-      ))}
-    </Box>
-  ) : (
-    ''
-  )
-  const footer =
-    route !== null && route.steps.length > 0 ? (
-      <Box key="footer" flexDirection="column" marginTop={1}>
-        <Text dimColor>{rule('')}</Text>
-        <Box key="foot-row" flexDirection="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
-          <Text dimColor wrap="truncate-end">
-            {`${Math.max(0, Math.round(((route.landedAt || now) - route.setAt) / 60_000))} min${now - route.lastClaudeAt > 120_000 && route.landedAt === 0 ? ` · Claude last checked in ${ago(now - route.lastClaudeAt)} ago` : ''}`}
-          </Text>
-          <Box key="foot-btns" flexDirection="row" gap={1}>
-            <Button key="details" plain label={view.isDetailsOn ? 'hide details' : 'details'} hotkey={isEditing ? undefined : 'd'} onPress={() => act.toggleDetails()} />
-            <Button key="legend-btn" plain label={view.isLegendOn ? 'hide legend' : 'legend'} onPress={() => act.toggleLegend()} />
-          </Box>
-        </Box>
-      </Box>
-    ) : (
-      ''
-    )
-
-  return (
-    <Box flexDirection="column" width={d.columns}>
-      {header}
-      {cardEl}
-      {addCard}
-      {whereCard}
-      {routeRows}
-      {legend}
-      {footer}
-    </Box>
-  )
 }
 
-function featureRows(
-  el: Elements,
-  d: Draw,
-  act: Actions,
-  route: Route,
-  feature: Feature,
-  featureIndex: number,
-  card: Card,
-  showSvg: boolean,
-  pose: Pose,
-): RenderElement[] {
+// ---------------------------------------------------------------- the route
+
+function drawRoute(el: Elements, d: Draw, act: Actions, card: Card): RenderElement[] {
+  const { Box, Text } = el
+  const t = wordsFor(d)
+  const { route } = d
+  const rows: RenderElement[] = []
+  if (route === null || route.steps.length === 0) return rows
+  if (d.isCompact && card === 'now') {
+    const next = route.steps.find(step => step.status === 'pending')
+    if (next !== undefined) {
+      rows.push(
+        <Text key="next" dimColor wrap="truncate-end">
+          {t('compact.next', { title: next.title })}
+        </Text>,
+      )
+    }
+
+    return rows
+  }
+  const stops = liveStops(route)
+  rows.push(
+    <Text key="rule-route" dimColor>
+      {rule(d.columns, t('route.rule'))}
+    </Text>,
+  )
+  route.features.forEach((feature, featureIndex) => {
+    rows.push(...stopRows(el, d, act, route, feature, featureIndex, card, stops))
+    for (const decision of route.decisions.filter(one => one.afterFeature === feature.id)) rows.push(...decisionRows(el, d, act, route, decision))
+  })
+  // The flag is green only after a party landing; amber when tests fail.
+  const landing = card === 'landed' ? landingOf(route) : null
+  rows.push(
+    <Box key="landing" flexDirection="row" gap={1}>
+      <Text color={landing === 'party' ? 'success' : landing === 'amber' ? 'warning' : undefined}>⚑</Text>
+      <Text>{t('route.landing')}</Text>
+    </Box>,
+  )
+
+  return rows
+}
+
+// How a stop reads at a glance: its mark, its chip, and its pass's color.
+// The green mark follows R6 (the flag's rule); the words claim receipts on
+// every step only when every step has them, and "no receipts yet" only when
+// none has.
+export function stopLook(route: Route, feature: Feature, live: Step[], hasPlane: boolean): { mark: string; color?: string; chip: WordKey | null } {
+  if (live.length === 0) return feature.proposedBy === 'you' ? { mark: '+', color: 'planMode', chip: 'stop.chip.proposed' } : { mark: 'x', color: 'inactive', chip: 'stop.chip.removed' }
+  if (live.some(step => step.status === 'failed')) return { mark: '!', color: 'warning', chip: 'stop.chip.failed' }
+  if (isStopVerified(route, feature.id)) return { mark: '✓', color: 'success', chip: live.every(hasReceipts) ? 'stop.chip.checked' : 'stop.chip.checkedYours' }
+  if (live.every(isClosed)) return { mark: '✓', chip: live.some(hasReceipts) ? null : 'stop.chip.untested' }
+  if (hasPlane) return { mark: '✈', color: 'claude', chip: null }
+
+  return { mark: 'o', chip: null }
+}
+
+// Each stop is a boarding pass. The one the plane is on (or one you opened,
+// one with a failing step, the first while boarding: v1's expanded rule) is
+// a full pass with its steps; every other stop folds into a one-line stub.
+function stopRows(el: Elements, d: Draw, act: Actions, route: Route, feature: Feature, featureIndex: number, card: Card, stops: Feature[]): RenderElement[] {
   const { Box, Text, Button } = el
+  const t = wordsFor(d)
   const steps = featureSteps(route, feature.id)
   const live = steps.filter(step => step.status !== 'removed')
   const hasPlane = steps.some(step => step.id === route.plane)
-  const isAllDone = live.length > 0 && live.every(isClosed)
-  const isAllChecked = live.length > 0 && live.every(step => step.status === 'checked' || step.status === 'skipped')
-  const hasFailed = live.some(step => step.status === 'failed')
   const isOpenByYou = d.view.open === feature.id || steps.some(step => step.id === d.view.open)
-  const isExpanded = hasPlane || isOpenByYou || hasFailed || (card === 'ready' && featureIndex === 0)
-  const glyph = feature.proposedBy === 'you' ? '+' : live.length === 0 ? 'x' : isAllDone ? 'v' : hasPlane ? '*' : hasFailed ? '!' : 'o'
+  const isExpanded = hasPlane || isOpenByYou || live.some(step => step.status === 'failed') || (card === 'ready' && featureIndex === 0)
+  const look = stopLook(route, feature, live, hasPlane)
+  const stopIndex = stops.findIndex(one => one.id === feature.id)
+  const sign = signOf(feature.title, stopIndex >= 0 ? stopIndex : featureIndex)
+  const closed = live.filter(isClosed).length
+  const count = live.length > 0 ? t('header.where.count', { done: closed, total: live.length }) : ''
+  const chip = look.chip === null ? '' : t(look.chip)
+  const open = () => act.open(d.view.open === feature.id ? null : feature.id)
+  const why = feature.proposedBy === 'you' && feature.why === '' ? t('stop.why.proposed') : feature.why
+  const badges = editsOf(route, feature.id, d.now).map(edit => badgeRow(el, d, act, edit, `fe-${edit.id}`))
+  const editor = d.view.open === feature.id ? featureEditor(el, d, act, route, feature) : ''
+
+  if (!isExpanded) {
+    return [
+      <Box key={`f-${feature.id}`} flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={1}>
+        <Box key={`fl-${feature.id}`} flexDirection="row" columnGap={1} flexShrink={1}>
+          <Text color={look.color} dimColor={look.color === undefined}>
+            {look.mark}
+          </Text>
+          <Button key={`fb-${feature.id}`} plain onPress={open}>
+            {feature.title}
+          </Button>
+        </Box>
+        <Text wrap="truncate-end">
+          <Text dimColor>{count}</Text>
+          <Text color={look.color} dimColor={look.color === undefined}>
+            {count !== '' && chip !== '' ? ` · ${chip}` : chip}
+          </Text>
+        </Text>
+      </Box>,
+      ...(card === 'ready' || why !== feature.why
+        ? [
+            <Text key={`fw-${feature.id}`} dimColor italic wrap="truncate-end">
+              {`│  ${why}`}
+            </Text>,
+          ]
+        : []),
+      ...badges,
+      ...(editor === '' ? [] : [editor]),
+    ]
+  }
+
+  const [i, n] = stopIndex >= 0 ? [stopIndex + 1, stops.length] : [featureIndex + 1, route.features.length]
+  const prev = stopIndex > 0 ? stops[stopIndex - 1] : undefined
+  const from = prev === undefined ? t('pin.start') : signOf(prev.title, stopIndex - 1)
   const position = live.findIndex(step => step.id === route.plane) + 1
-  const chip =
-    feature.proposedBy === 'you'
-      ? 'proposed by you'
-      : live.length === 0
-        ? 'removed by you'
-        : isAllDone
-          ? isAllChecked
-            ? 'checked'
-            : 'done, not tested'
-          : hasPlane && position > 0
-            ? `${position} of ${live.length}`
-            : `${live.length} step${live.length > 1 ? 's' : ''}`
-  const rows: RenderElement[] = [
-    <Box key={`f-${feature.id}`} flexDirection="row" gap={1}>
-      <Text color={isAllDone ? 'success' : hasPlane ? 'claude' : hasFailed ? 'warning' : undefined}>{glyph}</Text>
-      <Button key={`fb-${feature.id}`} plain onPress={() => act.open(d.view.open === feature.id ? null : feature.id)}>
-        {feature.title}
-        <Text dimColor>{`  ${chip}`}</Text>
-      </Button>
+  const progress = position > 0 ? t('stop.chip.position', { pos: position, n: live.length }) : count
+  const stepEls: RenderElement[] = []
+  steps.forEach((step, index) => stepEls.push(...stepRows(el, d, act, route, step, index === steps.length - 1)))
+
+  return [
+    <Box key={`wp-${feature.id}`} flexDirection="column" borderStyle="round" borderColor={hasPlane ? 'claude' : (look.color ?? 'subtle')} paddingX={1}>
+      <Text key={`ph-${feature.id}`} bold wrap="truncate-end">
+        {t('pass.header', { i, n })}
+      </Text>
+      <Text key={`pr-${feature.id}`} dimColor wrap="truncate-end">
+        {`FROM ${from} ✈ TO ${sign}${progress === '' ? '' : ` · ${progress}`}`}
+      </Text>
+      <Box key={`f-${feature.id}`} flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={1}>
+        <Button key={`fb-${feature.id}`} plain onPress={open}>
+          <Text bold>{feature.title}</Text>
+        </Button>
+        {chip !== '' ? (
+          <Text color={look.color} dimColor={look.color === undefined}>
+            {chip}
+          </Text>
+        ) : (
+          ''
+        )}
+      </Box>
+      {why !== feature.why ? (
+        <Text key={`fw-${feature.id}`} dimColor italic wrap="truncate-end">
+          {why}
+        </Text>
+      ) : (
+        ''
+      )}
+      <Text key={`pt-${feature.id}`} dimColor wrap="truncate-end">
+        {'┄'.repeat(Math.max(4, d.columns - 4))}
+      </Text>
+      {badges}
+      {editor}
+      {stepEls}
     </Box>,
   ]
-  if (!isExpanded) {
+}
+
+// A step row inside a pass: the tree, a mark (the plane's step shows a
+// still ✈), the title as a plain Button and the chip beside it, never in it.
+function stepRows(el: Elements, d: Draw, act: Actions, route: Route, step: Step, isLast: boolean): RenderElement[] {
+  const { Box, Text, Button } = el
+  const t = wordsFor(d)
+  const isPlane = step.id === route.plane && route.landedAt === 0
+  const look = CHIP[chipKindOf(step, isPlane)]
+  const hasPicture = el.Svg !== undefined && !d.isCalm
+  const glyph = isPlane ? (hasPicture ? '✈' : GLYPHS[poseOf(route, d.live, d.now)]) : look.glyph
+  const glyphColor = isPlane ? 'claude' : look.color
+  const chip = isFreshReceipts(step, d.now) ? (
+    <Text backgroundColor="success" color="inverseText">{` ${t('step.chip.checked')} `}</Text>
+  ) : look.word === null ? (
+    ''
+  ) : (
+    <Text color={look.color} dimColor={look.color === undefined}>
+      {t(look.word)}
+    </Text>
+  )
+  const indent = `${isLast ? '   ' : '│  '}   `
+  const rows: RenderElement[] = [
+    <Box key={`s-${step.id}`} flexDirection="row">
+      <Text dimColor>{isLast ? '└─ ' : '├─ '}</Text>
+      <Box key={`g-${step.id}`} width={3} flexShrink={0}>
+        <Text color={glyphColor} dimColor={glyphColor === undefined}>
+          {glyph}
+        </Text>
+      </Box>
+      <Box key={`c-${step.id}`} flexDirection="column" flexGrow={1} flexShrink={1}>
+        <Box key={`sr-${step.id}`} flexDirection="row" justifyContent="space-between" flexWrap="wrap" columnGap={1}>
+          <Button key={`sb-${step.id}`} plain onPress={() => act.open(d.view.open === step.id ? null : step.id)}>
+            {step.status === 'removed' ? (
+              <Text strikethrough dimColor>
+                {step.title}
+              </Text>
+            ) : (
+              step.title
+            )}
+          </Button>
+          {chip}
+        </Box>
+        {isPlane && d.live.isRunning ? (
+          <Text key={`sw-${step.id}`} dimColor italic wrap="truncate-end">
+            {step.why}
+          </Text>
+        ) : (
+          ''
+        )}
+      </Box>
+    </Box>,
+  ]
+  if (isPlane) {
+    rows.push(...crewRows(el, d, indent))
+    if (d.live.errorsInRow >= 2) {
+      rows.push(
+        <Text key={`r-${step.id}`} color="warning">
+          {`${indent}${t('step.retry', { n: d.live.errorsInRow })}`}
+        </Text>,
+      )
+    }
+  }
+  for (const edit of editsOf(route, step.id, d.now)) rows.push(badgeRow(el, d, act, edit, `se-${edit.id}`))
+  if (d.view.open === step.id) rows.push(stepEditor(el, d, act, route, step))
+
+  return rows
+}
+
+// The helpers Claude sent off, under the plane's step: nameless crew with
+// Claude's own words for the job. Never a check: coming back is not proof.
+function crewChip(helper: Live['helpers'][number], now: number): WordKey {
+  if (helper.isError === true) return 'crew.chip.snag'
+  if (helper.isDone) return 'crew.chip.back'
+  if (helper.startedAt !== undefined && now - helper.startedAt >= 60_000) return 'crew.chip.stillAt'
+
+  return 'crew.chip.onIt'
+}
+
+function crewRows(el: Elements, d: Draw, indent: string): RenderElement[] {
+  const { Text } = el
+  const t = wordsFor(d)
+  const helpers = d.live.helpers
+  const rows = helpers.slice(0, 3).map(helper => (
+    <Text key={`h-${helper.id}`} color={helper.isError === true ? 'warning' : undefined} dimColor={helper.isError !== true} wrap="truncate-end">
+      {`${indent}${t('crew.row', { chip: t(crewChip(helper, d.now)), description: helper.description })}`}
+    </Text>
+  ))
+  if (helpers.length > 3) {
     rows.push(
-      <Text key={`fw-${feature.id}`} dimColor italic wrap="truncate-end">
-        {`│  ${feature.why}`}
+      <Text key="h-more" dimColor>
+        {`${indent}${t('crew.more', { n: helpers.length - 3 })}`}
       </Text>,
     )
   }
-  for (const edit of editsOf(route, feature.id, d.now)) rows.push(badgeRow(el, act, edit, `fe-${edit.id}`, momentOf(route, d.live)))
-  if (d.view.open === feature.id) rows.push(featureEditor(el, act, feature))
-  if (isExpanded) {
-    steps.forEach((step, index) => {
-      const isPlane = step.id === route.plane && route.landedAt === 0
-      const isLast = index === steps.length - 1
-      rows.push(
-        <Box key={`s-${step.id}`} flexDirection="row">
-          <Text dimColor>{isLast ? '└─ ' : '├─ '}</Text>
-          <Box key={`g-${step.id}`} width={4} flexShrink={0}>
-            {isPlane && showSvg && el.Svg !== undefined ? (
-              <el.Svg source={SPRITES[pose]} alt="The plane: Claude is here" width={20} height={20} isInteractive />
-            ) : (
-              <Text color={isPlane ? 'claude' : chipColor(step)}>{isPlane ? GLYPHS[pose] : stepGlyph(step)}</Text>
-            )}
-          </Box>
-          <Box key={`c-${step.id}`} flexDirection="column" flexGrow={1} flexShrink={1}>
-            <Button key={`sb-${step.id}`} plain onPress={() => act.open(d.view.open === step.id ? null : step.id)}>
-              {step.status === 'removed' ? <Text strikethrough dimColor>{step.title}</Text> : step.title}
-              <Text color={chipColor(step)} dimColor={chipColor(step) === undefined}>{`  ${stepChip(step, isPlane)}`}</Text>
-            </Button>
-            {isPlane && d.live.isRunning ? (
-              <Text key={`sw-${step.id}`} dimColor italic wrap="truncate-end">
-                {step.why}
-              </Text>
-            ) : (
-              ''
-            )}
-          </Box>
-        </Box>,
-      )
-      if (isPlane) {
-        for (const helper of d.live.helpers.filter(one => !one.isDone)) {
-          rows.push(
-            <Text key={`h-${helper.id}`} dimColor wrap="truncate-end">
-              {`${isLast ? '   ' : '│  '}    > helper: ${helper.description} …`}
-            </Text>,
-          )
-        }
-        if (d.live.errorsInRow >= 2) {
-          rows.push(
-            <Text key={`r-${step.id}`} color="warning">
-              {`${isLast ? '   ' : '│  '}    retry ${d.live.errorsInRow}`}
-            </Text>,
-          )
-        }
-      }
-      for (const edit of editsOf(route, step.id, d.now)) rows.push(badgeRow(el, act, edit, `se-${edit.id}`, momentOf(route, d.live)))
-      if (d.view.open === step.id) rows.push(stepEditor(el, act, route, step, d.live))
-    })
-  }
-  rows.push(
-    <Text key={`fs-${feature.id}`} dimColor>
-      │
-    </Text>,
-  )
 
   return rows
 }
@@ -520,55 +854,60 @@ function featureRows(
 const editsOf = (route: Route, target: string, now: number) =>
   route.edits.filter(edit => edit.target === target && edit.kind !== 'note' && (edit.state !== 'acked' || now - edit.ackedAt < 60_000))
 
-function badgeRow(el: Elements, act: Actions, edit: Edit, key: string, moment: Moment): RenderElement {
+function badgeRow(el: Elements, d: Draw, act: Actions, edit: Edit, key: string): RenderElement {
   const { Box, Text, Button } = el
-  const badge = badgeText(edit, moment)
+  const t = wordsFor(d)
+  const badge = badgeText(edit, momentOf(d.route, d.live), t)
 
   return (
     <Box key={key} flexDirection="row" gap={1} flexWrap="wrap" marginLeft={3}>
-      <Text dimColor>you changed this ·</Text>
+      <Text dimColor>{t('badge.prefix')}</Text>
       <Text color={badge.color}>{badge.text}</Text>
-      {edit.state === 'queued' ? <Button key={`undo-${edit.id}`} plain label="undo" onPress={() => act.undo(edit.id)} /> : ''}
-      {isUnapplied(edit) ? <Button key={`resend-${edit.id}`} plain label="send now" onPress={() => act.sendNow()} /> : ''}
+      {edit.state === 'queued' ? <Button key={`undo-${edit.id}`} plain label={t('btn.undoSmall')} onPress={() => act.undo(edit.id)} /> : ''}
+      {isUnapplied(edit) ? <Button key={`resend-${edit.id}`} plain label={t('btn.sendNowSmall')} onPress={() => act.sendNow()} /> : ''}
     </Box>
   )
 }
 
-function stepEditor(el: Elements, act: Actions, route: Route, step: Step, live: Live): RenderElement {
+// When Claude reads a change made in an editor.
+const hintFor = (route: Route, live: Live): WordKey => {
+  const moment = momentOf(route, live)
+
+  return moment === 'gate' ? 'editor.hint.gate' : moment === 'idle' ? 'editor.hint.idle' : 'editor.hint.flying'
+}
+
+function stepEditor(el: Elements, d: Draw, act: Actions, route: Route, step: Step): RenderElement {
   const { Box, Text, Button, Input } = el
-  const isPlane = step.id === route.plane && live.isRunning
+  const t = wordsFor(d)
+  const isPlane = step.id === route.plane && d.live.isRunning
   const isDone = isClosed(step) || step.status === 'failed'
   const actions: RenderElement[] = []
   if (step.status === 'removed' || (step.status === 'skipped' && step.doneBy === 'you')) {
     const edit = route.edits.find(one => one.target === step.id && one.state === 'queued' && one.kind === (step.status === 'removed' ? 'remove' : 'skip'))
-    if (edit !== undefined) actions.push(<Button key={`ed-undo-${step.id}`} label="Undo" onPress={() => act.undo(edit.id)} />)
+    if (edit !== undefined) actions.push(<Button key={`ed-undo-${step.id}`} label={t('btn.undo')} onPress={() => act.undo(edit.id)} />)
   } else if (isPlane) {
     actions.push(
-      <Button key={`ed-stop-${step.id}`} label="Stop now" onPress={() => act.stopNow(step.id)} />,
-      <Button key={`ed-skip-${step.id}`} label="Skip it after this attempt" onPress={() => act.edit('skip', step.id)} />,
+      <Button key={`ed-stop-${step.id}`} label={t(d.view.armedStop === step.id ? 'btn.stopNow.armed' : 'btn.stopNow')} onPress={() => act.stopNow(step.id)} />,
+      <Button key={`ed-skip-${step.id}`} label={t('btn.skipAfter')} onPress={() => act.edit('skip', step.id)} />,
     )
   } else if (isDone) {
     actions.push(
-      <Button key={`ed-redo-${step.id}`} label="Redo this" onPress={() => act.edit('redo', step.id)} />,
-      <Button key={`ed-checked-${step.id}`} label="I checked it" onPress={() => act.edit('checked', step.id)} />,
+      <Button key={`ed-redo-${step.id}`} label={t('btn.redo')} onPress={() => act.edit('redo', step.id)} />,
+      <Button key={`ed-checked-${step.id}`} label={t('btn.iChecked')} onPress={() => act.edit('checked', step.id)} />,
     )
   } else {
     actions.push(
-      <Button key={`ed-skip-${step.id}`} label="Skip it" onPress={() => act.edit('skip', step.id)} />,
-      <Button key={`ed-remove-${step.id}`} label="Remove it" onPress={() => act.edit('remove', step.id)} />,
+      <Button key={`ed-skip-${step.id}`} label={t('btn.skip')} onPress={() => act.edit('skip', step.id)} />,
+      <Button key={`ed-remove-${step.id}`} label={t('btn.remove')} onPress={() => act.edit('remove', step.id)} />,
     )
   }
-  const moment = momentOf(route, live)
-  const hint = isPlane ? COPY.nowHint : isDone ? COPY.doneHint : moment === 'gate' ? 'Claude sees this when it takes off.' : moment === 'idle' ? 'Claude sees this with your next message.' : COPY.editHint
-  const detail =
-    step.files.length > 0 || step.check !== ''
-      ? `${step.files.length > 0 ? `files: ${step.files.join(', ')}` : ''}${step.files.length > 0 && step.check !== '' ? ' · ' : ''}${step.check !== '' ? `check: ${step.check}` : ''}`
-      : ''
+  const hint = isPlane ? 'editor.hint.now' : isDone ? 'editor.hint.done' : hintFor(route, d.live)
+  const detail = [step.files.length > 0 ? `files: ${step.files.join(', ')}` : '', step.check !== '' ? `check: ${step.check}` : ''].filter(one => one !== '').join(' · ')
 
   return (
     <Box key={`ed-${step.id}`} flexDirection="column" borderStyle="round" borderColor="planMode" paddingX={1} marginLeft={3}>
       <Text key={`ed-why-${step.id}`} dimColor italic wrap="wrap">
-        {step.why === '' ? 'why: —' : `why: ${step.why}`}
+        {step.why === '' ? 'why: —' : t('editor.why', { why: step.why })}
       </Text>
       {detail !== '' ? (
         <Text key={`ed-detail-${step.id}`} dimColor wrap="wrap">
@@ -577,38 +916,57 @@ function stepEditor(el: Elements, act: Actions, route: Route, step: Step, live: 
       ) : (
         ''
       )}
-      {step.claim !== undefined ? <Text key={`ed-claim-${step.id}`} dimColor wrap="wrap">{`Claude says: ${step.claim}`}</Text> : ''}
+      {step.claim !== undefined ? (
+        <Text key={`ed-claim-${step.id}`} dimColor wrap="wrap">
+          {t('editor.claim', { claim: step.claim })}
+        </Text>
+      ) : (
+        ''
+      )}
       {step.status !== 'removed' ? (
-        <Input key={`rn-${step.id}`} label="Change it to" value={step.title} submitLabel="save" onSubmit={value => act.edit('rename', step.id, value)} />
+        <Input
+          key={`rn-${step.id}`}
+          label={t('editor.rename.label')}
+          value={step.title}
+          submitLabel={t('editor.rename.submit')}
+          onSubmit={value => act.edit('rename', step.id, value)}
+        />
       ) : (
         ''
       )}
       <Box key={`ed-btns-${step.id}`} flexDirection="row" flexWrap="wrap" gap={1}>
         {actions}
-        <Button key={`ed-close-${step.id}`} label="Close" onPress={() => act.open(null)} />
+        <Button key={`ed-close-${step.id}`} label={t('btn.close')} onPress={() => act.open(null)} />
       </Box>
       <Text key={`ed-hint-${step.id}`} dimColor wrap="wrap">
-        {hint}
+        {t(hint)}
       </Text>
     </Box>
   )
 }
 
-function featureEditor(el: Elements, act: Actions, feature: Feature): RenderElement {
+function featureEditor(el: Elements, d: Draw, act: Actions, route: Route, feature: Feature): RenderElement {
   const { Box, Text, Button, Input } = el
+  const t = wordsFor(d)
 
   return (
     <Box key={`fed-${feature.id}`} flexDirection="column" borderStyle="round" borderColor="planMode" paddingX={1} marginLeft={3}>
       <Text key={`fed-why-${feature.id}`} dimColor italic wrap="wrap">
-        {feature.why === '' ? 'why: —' : `why: ${feature.why}`}
+        {feature.why === '' ? 'why: —' : t('editor.why', { why: feature.why })}
       </Text>
-      <Input key={`frn-${feature.id}`} label="Change it to" value={feature.title} submitLabel="save" onSubmit={value => act.edit('rename', feature.id, value)} />
+      <Input
+        key={`frn-${feature.id}`}
+        label={t('editor.rename.label')}
+        value={feature.title}
+        submitLabel={t('editor.rename.submit')}
+        onSubmit={value => act.edit('rename', feature.id, value)}
+      />
       <Box key={`fed-btns-${feature.id}`} flexDirection="row" flexWrap="wrap" gap={1}>
-        <Button key={`fed-remove-${feature.id}`} label="Remove this feature" onPress={() => act.edit('remove', feature.id)} />
-        <Button key={`fed-close-${feature.id}`} label="Close" onPress={() => act.open(null)} />
+        <Button key={`fed-remove-${feature.id}`} label={t('btn.removeStop')} onPress={() => act.edit('remove', feature.id)} />
+        <Button key={`fed-close-${feature.id}`} label={t('btn.close')} onPress={() => act.open(null)} />
       </Box>
       <Text key={`fed-hint-${feature.id}`} dimColor wrap="wrap">
-        {COPY.editHint}
+        {t(hintFor(route, d.live))}
       </Text>
     </Box>
   )
@@ -616,23 +974,30 @@ function featureEditor(el: Elements, act: Actions, feature: Feature): RenderElem
 
 function decisionRows(el: Elements, d: Draw, act: Actions, route: Route, decision: Decision): RenderElement[] {
   const { Box, Text, Button } = el
+  const t = wordsFor(d)
   const isMine = decision.state === 'switched' || decision.state === 'yours'
-  const line = isMine ? `You chose ${decision.userChoice ?? decision.choice}` : `Claude chose ${decision.choice}`
+  const isFlagged = decision.state === 'flagged'
+  const line = isMine ? t('decision.you', { choice: decision.userChoice ?? decision.choice }) : t('decision.claude', { choice: decision.choice })
+  const chip = isFlagged ? t('decision.chip.flagged') : decision.state === 'kept' ? t('decision.chip.kept') : ''
   const rows: RenderElement[] = [
-    <Box key={`d-${decision.id}`} flexDirection="row" gap={1}>
-      <Text color={decision.state === 'flagged' ? 'warning' : 'subtle'}>{'<>'}</Text>
+    <Box key={`d-${decision.id}`} flexDirection="row" columnGap={1} flexWrap="wrap">
+      <Text color={isFlagged ? 'warning' : 'subtle'}>{'<>'}</Text>
       <Button key={`db-${decision.id}`} plain onPress={() => act.open(d.view.open === decision.id ? null : decision.id)}>
         {line}
-        <Text color={decision.state === 'flagged' ? 'warning' : undefined} dimColor={decision.state !== 'flagged'}>
-          {decision.state === 'flagged' ? '  review' : decision.state === 'kept' ? '  kept' : ''}
-        </Text>
       </Button>
+      {chip !== '' ? (
+        <Text color={isFlagged ? 'warning' : undefined} dimColor={!isFlagged}>
+          {chip}
+        </Text>
+      ) : (
+        ''
+      )}
     </Box>,
     <Text key={`dw-${decision.id}`} dimColor italic wrap="truncate-end">
       {`│  ${decision.question}${decision.why === '' ? '' : ` · ${decision.why}`}`}
     </Text>,
   ]
-  for (const edit of editsOf(route, decision.id, d.now)) rows.push(badgeRow(el, act, edit, `de-${edit.id}`, momentOf(route, d.live)))
+  for (const edit of editsOf(route, decision.id, d.now)) rows.push(badgeRow(el, d, act, edit, `de-${edit.id}`))
   if (d.view.open === decision.id) {
     rows.push(
       <Box key={`ded-${decision.id}`} flexDirection="column" borderStyle="round" borderColor="planMode" paddingX={1} marginLeft={3}>
@@ -640,56 +1005,161 @@ function decisionRows(el: Elements, d: Draw, act: Actions, route: Route, decisio
           {decision.question}
         </Text>
         <Text key="why" dimColor wrap="wrap">
-          {decision.why === '' ? `Claude chose ${decision.choice}` : `Claude chose ${decision.choice} because ${decision.why}`}
+          {decision.why === '' ? t('decision.claude', { choice: decision.choice }) : t('decision.because', { choice: decision.choice, why: decision.why })}
         </Text>
         <Text key="impact" wrap="wrap">
           {impactText(route, decision)}
         </Text>
         <Box key="dbtns" flexDirection="row" flexWrap="wrap" gap={1}>
-          <Button key={`keep-${decision.id}`} label={`Keep ${decision.choice}`} onPress={() => act.keep(decision.id)} />
+          <Button key={`keep-${decision.id}`} label={t('btn.keep', { choice: decision.choice })} onPress={() => act.keep(decision.id)} />
           {decision.alternatives.map((alternative, index) => (
-            <Button key={`sw-${decision.id}-${index}`} label={`Switch to ${alternative}`} onPress={() => act.edit('switch', decision.id, alternative)} />
+            <Button key={`sw-${decision.id}-${index}`} label={t('btn.switch', { alternative })} onPress={() => act.edit('switch', decision.id, alternative)} />
           ))}
-          <Button key={`why-${decision.id}`} label="Ask Claude why" onPress={() => act.askWhy(decision.id)} />
-          <Button key={`first-${decision.id}`} label="Ask me first next time" onPress={() => act.askFirst()} />
-          <Button key={`dclose-${decision.id}`} label="Close" onPress={() => act.open(null)} />
+          <Button key={`why-${decision.id}`} label={t('btn.askWhy')} onPress={() => act.askWhy(decision.id)} />
+          <Button key={`first-${decision.id}`} label={t('btn.askFirst')} onPress={() => act.askFirst()} />
+          <Button key={`dclose-${decision.id}`} label={t('btn.close')} onPress={() => act.open(null)} />
         </Box>
       </Box>,
     )
   }
-  rows.push(
-    <Text key={`ds-${decision.id}`} dimColor>
-      │
-    </Text>,
-  )
 
   return rows
 }
+
+// ---------------------------------------------------------------- add, where, legend, footer
+
+function addCard(el: Elements, d: Draw, act: Actions): RenderElement | string {
+  const { Box, Text, Button, Input } = el
+  if (d.view.open !== 'add-feature' || d.route === null) return ''
+  const t = wordsFor(d)
+
+  return (
+    <Box key="add-card" flexDirection="column" borderStyle="round" borderColor="planMode" paddingX={1} marginTop={1}>
+      <Input
+        key="add-feature"
+        label={t('add.label')}
+        placeholder={t('add.placeholder')}
+        submitLabel={t('add.submit')}
+        onSubmit={value => act.edit('add-feature', 'route', value)}
+      />
+      <Box key="add-btns" flexDirection="row" gap={1}>
+        <Button key="add-close" label={t('btn.close')} onPress={() => act.open(null)} />
+      </Box>
+      <Text key="add-hint" dimColor wrap="wrap">
+        {t('add.hint')}
+      </Text>
+    </Box>
+  )
+}
+
+function whereCard(el: Elements, d: Draw, act: Actions): RenderElement | string {
+  const { Box, Text, Button } = el
+  if (d.view.whereAnswer === '') return ''
+  const t = wordsFor(d)
+
+  return (
+    <Box key="where-card" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1} marginTop={1}>
+      <Text bold>{t('where.title')}</Text>
+      <Text wrap="wrap">{d.view.whereAnswer}</Text>
+      <Button key="where-close" label={t('btn.close')} onPress={() => act.dismissWhere()} />
+    </Box>
+  )
+}
+
+const LEGEND: WordKey[] = [
+  'legend.checked',
+  'legend.untested',
+  'legend.now',
+  'legend.pending',
+  'legend.failed',
+  'legend.decision',
+  'legend.edit',
+  'legend.landing',
+  'legend.clock',
+  'legend.crew',
+]
+
+function legendBox(el: Elements, d: Draw): RenderElement | string {
+  const { Box, Text } = el
+  if (!d.view.isLegendOn) return ''
+  const t = wordsFor(d)
+
+  return (
+    <Box key="legend" flexDirection="column" borderStyle="round" borderColor="subtle" paddingX={1} marginTop={1}>
+      {LEGEND.map((key, index) => (
+        <Text key={`lg-${index}`} dimColor>
+          {t(key)}
+        </Text>
+      ))}
+    </Box>
+  )
+}
+
+function footerBox(el: Elements, d: Draw, act: Actions): RenderElement | string {
+  const { Box, Text, Button } = el
+  const { route, now } = d
+  if (route === null || route.steps.length === 0) return ''
+  const t = wordsFor(d)
+  const minutes = Math.max(0, Math.round(((route.landedAt || now) - route.setAt) / 60_000))
+  const stale = now - route.lastClaudeAt > 120_000 && route.landedAt === 0 ? t('footer.stale', { ago: ago(now - route.lastClaudeAt) }) : ''
+  const isEditing = d.view.open !== null
+
+  return (
+    <Box key="footer" flexDirection="column" marginTop={1}>
+      <Text dimColor>{rule(d.columns, '')}</Text>
+      <Box key="foot-row" flexDirection="row" justifyContent="space-between" flexWrap="wrap" gap={1}>
+        <Text dimColor wrap="truncate-end">
+          {`${t('footer.elapsed', { min: minutes })}${stale}`}
+        </Text>
+        <Box key="foot-btns" flexDirection="row" gap={1}>
+          <Button
+            key="details"
+            plain
+            label={t(d.view.isDetailsOn ? 'btn.hideDetails' : 'btn.details')}
+            hotkey={isEditing ? undefined : 'd'}
+            onPress={() => act.toggleDetails()}
+          />
+          <Button key="legend-btn" plain label={t(d.view.isLegendOn ? 'btn.hideLegend' : 'btn.legend')} onPress={() => act.toggleLegend()} />
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+
+// ---------------------------------------------------------------- the band
 
 // The band above the prompt: one line while the map is not on screen.
 export function drawBand(el: Elements, d: Draw, onOpen: () => void, act: Actions): RenderElement | undefined {
   const { Box, Text, Button } = el
   const { route, live, view, now } = d
   if (route === null || route.steps.length === 0) return undefined
+  const t = wordsFor(d)
   const card = cardOf(route, live)
   const c = counts(route)
   const step = route.steps.find(one => one.id === route.plane)
+  const clock =
+    route.gate === 'held'
+      ? t('card.ready.clock.held')
+      : view.isCountdown
+        ? t('card.ready.clock.countdown', { n: view.countdown })
+        : t('card.ready.clock.waitGo')
+  const where = c.position > 0 ? t('header.where.step', { n: c.position, total: c.total }) : t('header.where.count', { done: c.done, total: c.total })
   const label =
     card === 'ready'
-      ? `Route ready: ${c.total} steps · ${route.gate === 'held' ? 'held' : view.isCountdown ? `taking off in ${view.countdown} s` : 'waiting for Take off'}`
+      ? t('band.ready', { n: c.total, clock })
       : card === 'landed'
-        ? `Landed: ${c.done} of ${c.total} done`
+        ? t(landingOf(route) === 'party' ? 'band.landed.party' : 'band.landed', { done: c.done, total: c.total })
         : card === 'ask'
-          ? 'Your turn: Claude asked you something'
-          : `${c.position > 0 ? `step ${c.position} of ${c.total}` : `${c.done} of ${c.total} done`}${step !== undefined ? ` · ${step.title}` : ''}${live.isRunning && live.activity !== '' ? ` · ${live.activity}` : ''}`
+          ? t('band.ask')
+          : [where, step?.title ?? '', live.isRunning ? live.activity : ''].filter(part => part !== '').join(' · ')
 
   return (
     <Box flexDirection="row" gap={1} flexWrap="wrap">
       <Text color="claude">{GLYPHS[poseOf(route, live, now)]}</Text>
-      <Text wrap="truncate-end">{`Flight Plan  ${label}`}</Text>
-      <Button key="band-open" label="Open map" onPress={() => onOpen()} />
-      {card === 'ready' ? <Button key="band-takeoff" label="Take off now" onPress={() => act.takeOff()} /> : ''}
-      {card === 'ready' && route.gate !== 'held' ? <Button key="band-hold" label="Hold" onPress={() => act.hold()} /> : ''}
+      <Text wrap="truncate-end">{t('band.line', { label })}</Text>
+      <Button key="band-open" label={t('btn.openMap')} onPress={() => onOpen()} />
+      {card === 'ready' ? <Button key="band-takeoff" label={t('btn.takeoff')} onPress={() => act.takeOff()} /> : ''}
+      {card === 'ready' && route.gate !== 'held' ? <Button key="band-hold" label={t('btn.bandHold')} onPress={() => act.hold()} /> : ''}
     </Box>
   )
 }

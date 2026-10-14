@@ -66,7 +66,11 @@ export function flip(grid: Grid): Grid {
   return grid.map(row => row.padEnd(w, '.').split('').reverse().join(''))
 }
 
-// XML-escapes text that goes into markup (a <title>, an attribute).
+// XML-escapes text that goes into markup (a <title>, an attribute), and
+// drops what XML 1.0 cannot hold at all: control characters other than tab,
+// newline and return, and half a surrogate pair (a slice through an emoji).
 export function esc(text: string): string {
-  return text.replace(/[&<>"']/g, c => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'))
+  return text
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+    .replace(/[&<>"']/g, c => (c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;'))
 }

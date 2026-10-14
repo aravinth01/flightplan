@@ -111,6 +111,12 @@ export type Live = {
   cost: number | null
   contextPercent: number | null
   heldTurnEnd: boolean
+  /**
+   * When the sky last changed with no event time of its own (the turn
+   * ended, a question was answered, a route call redrew a pin): scene.ts
+   * drops a running one-shot there instead of replaying it.
+   */
+  changedAt?: number
 }
 
 export type View = {
