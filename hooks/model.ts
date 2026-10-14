@@ -27,6 +27,33 @@ export const isSkippedByYou = (step: Step) => step.status === 'skipped' && step.
 
 export type Answer = { result: Record<string, unknown>; context: string[] }
 
+// ---------------------------------------------------------------- honesty
+
+// Receipts: a test run the map saw pass for this step. "I checked it" (the
+// person) and "Claude says done" are closed, never receipts.
+export const hasReceipts = (step: Step) => step.status === 'checked' && step.doneBy !== 'you'
+
+// How a landing is told. party: every live step checked (or skipped by the
+// person), at least one with receipts, nothing Claude skipped, last run green.
+// amber: the last test run failed, or a step is failing. quiet: the rest.
+export type Landing = 'party' | 'quiet' | 'amber'
+
+export function landingOf(route: Route): Landing {
+  const live = route.steps.filter(LIVE)
+  if ((route.tests?.failed ?? 0) > 0 || live.some(step => step.status === 'failed')) return 'amber'
+  const isAllChecked = live.length > 0 && live.every(step => step.status === 'checked' || isSkippedByYou(step))
+
+  return isAllChecked && live.some(hasReceipts) ? 'party' : 'quiet'
+}
+
+// The same rule for one stop (feature): its flag turns green and the chime
+// plays only when every live step in it is checked, with receipts.
+export function isStopVerified(route: Route, featureId: string): boolean {
+  const live = route.steps.filter(step => LIVE(step) && step.featureId === featureId)
+
+  return live.length > 0 && live.every(step => step.status === 'checked' || isSkippedByYou(step)) && live.some(hasReceipts)
+}
+
 export function newRoute(now: number): Route {
   return {
     version: 0,

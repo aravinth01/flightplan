@@ -23,6 +23,8 @@ import {
   userEdit,
 } from './model'
 import type { Answer } from './model'
+import { drawLab } from './lab'
+import type { LabPage } from './lab'
 import { drawBand, drawPane } from './pane'
 import type { Actions, Elements } from './pane'
 import { activityFor } from './text'
@@ -91,6 +93,22 @@ let turnWrites = 0
 let persisting: Promise<void> = Promise.resolve()
 const nudged = new Set<string>()
 const deniedFiles = new Set<string>()
+
+// The lab (/flight lab): checks for v2's pictures, answered by the person in
+// the desktop app and saved where Claude reads them. Removed before release.
+const LAB = 'flightplan-lab'
+const LAB_OUT = `${process.env.TMPDIR ?? '/tmp'}/flightplan-lab-results.json`
+const lab = {
+  page: 'redraw' as LabPage,
+  tick: 0,
+  replay: 0,
+  columns: 0,
+  placement: '',
+  answers: {} as Record<string, string>,
+  isDone: false,
+  events: [] as { at: number; what: string }[],
+}
+let labTimer: { cancel: () => void } | null = null
 
 // ------------------------------------------------------------ state
 
@@ -207,6 +225,71 @@ function toast($: EngineInterface, text: string) {
     $.ui.toast(text)
   } catch {
     // no surface to show it on
+  }
+}
+
+// ------------------------------------------------------------ the lab
+
+async function openLab($: EngineInterface): Promise<{ isPlaced: boolean; reason?: string }> {
+  try {
+    const opened = await $.ui.open({ id: LAB, title: 'FP lab' })
+    labTimer?.cancel()
+    // The redraw page redraws every second; the other pages only on a tap.
+    labTimer = $.clock.every(1000, () => {
+      if (lab.page !== 'redraw') return
+      lab.tick += 1
+      $.ui.invalidate('ui.render')
+    })
+    await labEvent($, 'opened')
+
+    return opened
+  } catch (error) {
+    return { isPlaced: false, reason: String(error) }
+  }
+}
+
+async function labEvent($: EngineInterface, what: string) {
+  lab.events.push({ at: await $.clock.now(), what })
+  await saveLab($)
+}
+
+async function saveLab($: EngineInterface) {
+  const { page, columns, placement, answers, isDone, events } = lab
+  const text = JSON.stringify({ savedAt: await $.clock.now(), isDone, page, columns, placement, answers, events }, null, 2)
+  await $.fs.write(LAB_OUT, text).catch(() => undefined)
+}
+
+function labActions($: EngineInterface) {
+  const redraw = () => $.ui.invalidate('ui.render')
+
+  return {
+    page: (page: LabPage) => {
+      lab.page = page
+      redraw()
+      void labEvent($, `page ${page}`)
+    },
+    answer: (id: string, value: string) => {
+      lab.answers[id] = value
+      redraw()
+      void saveLab($)
+    },
+    toggle: (id: string, item: string) => {
+      const chosen = new Set((lab.answers[id] ?? '').split(',').filter(one => one !== '' && one !== 'none'))
+      if (chosen.has(item)) chosen.delete(item)
+      else chosen.add(item)
+      lab.answers[id] = [...chosen].sort().join(',')
+      redraw()
+      void saveLab($)
+    },
+    replay: () => {
+      lab.replay += 1
+      redraw()
+    },
+    done: () => {
+      lab.isDone = true
+      redraw()
+      void labEvent($, 'done')
+    },
   }
 }
 
@@ -500,6 +583,10 @@ export const register: Register = (on, options) => {
         const lines = route.steps.map(step => `${step.id === route.plane ? '✈' : isClosed(step) ? 'v' : step.status === 'removed' ? 'x' : 'o'} ${step.title} (${step.status})`)
         return { text: [`${route.goal}: ${c.done} of ${c.total} done`, ...lines].join('\n') }
       }
+      case 'lab': {
+        const opened = await openLab($)
+        return { text: opened.isPlaced ? 'Lab opened beside the chat.' : `The lab is open but not on screen yet: ${opened.reason}` }
+      }
       default: {
         const opened = await openPane($)
         return { text: opened.isPlaced ? 'Flight Plan map opened.' : `The map is open but not on screen yet: ${opened.reason}` }
@@ -510,6 +597,15 @@ export const register: Register = (on, options) => {
   on('ui.close', { id: PANE }, async ($, e, next) => {
     const closed = await next(e)
     await setView($, () => ({ isPlaced: false }))
+
+    return closed
+  })
+
+  on('ui.close', { id: LAB }, async ($, e, next) => {
+    const closed = await next(e)
+    labTimer?.cancel()
+    labTimer = null
+    await labEvent($, 'closed')
 
     return closed
   })
@@ -808,6 +904,23 @@ export const register: Register = (on, options) => {
       { route, live, view, now, columns: e.props.bodyColumns, isCompact: e.props.placement === 'inline', isCalm },
       actions($),
     )
+  })
+
+  on('ui.render', { component: 'Pane', requestId: LAB }, async ($, e) => {
+    if (lab.columns !== e.props.bodyColumns || lab.placement !== e.props.placement) {
+      lab.columns = e.props.bodyColumns
+      lab.placement = e.props.placement
+      void labEvent($, `size ${e.props.bodyColumns} ${e.props.placement}`)
+    }
+    const d = { ...lab, columns: e.props.bodyColumns, placement: e.props.placement }
+    if (e.surface === 'desktop' || e.surface === 'vscode') {
+      const table = $.ui.resolve(e)
+
+      return drawLab({ Box: table.Box, Text: table.Text, Button: table.Button, Svg: table.Svg }, d, labActions($))
+    }
+    const table = $.ui.resolve(e)
+
+    return drawLab({ Box: table.Box, Text: table.Text, Button: table.Button }, d, labActions($))
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
