@@ -1,0 +1,6 @@
+{
+  "name": "flightplan",
+  "owner": { "name": "Sree Aravinth V" },
+  "description": "Flight Plan: a live map of what Claude is doing, beside the chat",
+  "plugins": [{ "name": "flightplan", "source": "./" }]
+}

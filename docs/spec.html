@@ -1,0 +1,951 @@
+<title>Flight Plan</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Public+Sans:ital,wght@0,400;0,600;0,700;1,400&display=swap">
+<style>
+/* Layout: a pre-flight briefing. One reading column; the live pane is the
+   exhibit beside the opening, and every later section is a briefing item. */
+:root {
+  --paper: #F2F5F1;
+  --sheet: #FFFFFF;
+  --ink: #15212E;
+  --muted: #536276;
+  --rule: #D2DAD3;
+  --route: #A3216B;
+  --sky: #1F5C9E;
+  --ok: #2B744A;
+  --warn: #9A600E;
+  --bad: #AE3434;
+  --plane: #D97757;
+  --pane-bg: #FBFCFA;
+  --pane-ink: #1B2734;
+  --pane-dim: #66727F;
+  --pane-line: #C7D0C9;
+  --pane-hi: #E9EEF5;
+  --chip-bg: #E7ECE8;
+  --display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", sans-serif;
+  --body: "Public Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --measure: 66ch;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #0D1520; --sheet: #121D2A; --ink: #E3E9F0; --muted: #9AA8B8; --rule: #24344A;
+    --route: #E46BB1; --sky: #7DB0EC; --ok: #62C18A; --warn: #E3A647; --bad: #E77A7A; --plane: #E48A69;
+    --pane-bg: #0F1925; --pane-ink: #DCE4EC; --pane-dim: #8C9AAB; --pane-line: #2C3C51; --pane-hi: #1A2940;
+    --chip-bg: #1B2838;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #0D1520; --sheet: #121D2A; --ink: #E3E9F0; --muted: #9AA8B8; --rule: #24344A;
+  --route: #E46BB1; --sky: #7DB0EC; --ok: #62C18A; --warn: #E3A647; --bad: #E77A7A; --plane: #E48A69;
+  --pane-bg: #0F1925; --pane-ink: #DCE4EC; --pane-dim: #8C9AAB; --pane-line: #2C3C51; --pane-hi: #1A2940;
+  --chip-bg: #1B2838;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--body);
+  font-size: 16px;
+  line-height: 1.55;
+}
+.wrap { max-width: 1120px; margin: 0 auto; padding-inline: 20px; padding-block: 0 72px; }
+a { color: var(--sky); }
+:focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 600; text-wrap: balance; line-height: 1.08; margin: 0; }
+h2 { font-size: clamp(1.7rem, 3.2vw, 2.2rem); letter-spacing: 0.01em; }
+h3 { font-size: 1.25rem; letter-spacing: 0.02em; }
+p { margin: 0; }
+.label {
+  font-family: var(--display); font-weight: 600; font-size: 0.85rem;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted);
+}
+code, .mono { font-family: var(--mono); font-size: 0.88em; }
+
+/* Masthead: the briefing strip */
+.mast {
+  display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: baseline; justify-content: space-between;
+  padding-block: 20px 14px; border-bottom: 2px solid var(--ink);
+}
+.brand { font-family: var(--display); font-size: 1.6rem; font-weight: 700; letter-spacing: 0.02em; display: flex; gap: 10px; align-items: center; }
+.brand svg { width: 34px; height: 34px; }
+.mast .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; font-family: var(--mono); font-size: 0.8rem; color: var(--muted); }
+.mast .meta b { color: var(--ink); font-weight: 600; }
+
+/* Hero: thesis and the exhibit */
+.hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.12fr); gap: 40px; padding-block: 40px 24px; align-items: start; }
+.hero h1 { font-size: clamp(2.4rem, 5.4vw, 3.9rem); font-weight: 700; letter-spacing: -0.005em; }
+.hero h1 em { font-style: normal; color: var(--route); }
+.lede { margin-top: 18px; font-size: 1.12rem; max-width: 44ch; color: var(--ink); }
+.lede + .lede { margin-top: 12px; font-size: 1rem; color: var(--muted); }
+.legend { margin-top: 26px; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 14px; font-size: 0.92rem; max-width: 46ch; }
+.legend dt { font-family: var(--mono); font-weight: 600; color: var(--pane-ink); text-align: center; min-width: 2.2em; }
+.legend dd { margin: 0; color: var(--muted); }
+
+/* The simulated pane */
+.exhibit { min-width: 0; }
+.desk {
+  border: 1px solid var(--pane-line); border-radius: 10px; background: var(--sheet);
+  box-shadow: 0 1px 0 var(--pane-line), 0 18px 40px -24px rgba(16, 32, 52, 0.35);
+  overflow: hidden;
+}
+.desk-bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--pane-line); font-size: 0.8rem; color: var(--muted); }
+.desk-bar .dots { display: flex; gap: 6px; }
+.desk-bar .dots i { width: 10px; height: 10px; border-radius: 50%; background: var(--pane-line); display: block; }
+.desk-bar .tab { margin-left: 8px; padding: 2px 10px; border-radius: 6px; background: var(--pane-hi); color: var(--pane-ink); font-weight: 600; }
+.pane-scroll { overflow-x: auto; }
+.pane {
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.6; color: var(--pane-ink); background: var(--pane-bg);
+  padding: 12px 14px 14px; min-width: 34ch; max-height: 640px; overflow-y: auto;
+}
+.pane .row { display: flex; align-items: flex-start; gap: 0; min-height: 1.6em; }
+.pane .dim { color: var(--pane-dim); }
+.pane .spread { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.pane .goal { font-weight: 600; }
+.pane .bar .on { color: var(--ok); }
+.pane .bar .off { color: var(--pane-dim); }
+.pane .new { color: var(--warn); }
+.pane .rule { color: var(--pane-dim); white-space: pre; overflow: hidden; }
+.card {
+  border: 1.5px solid var(--sky); border-radius: 8px; padding: 6px 10px 8px; margin-block: 8px 10px;
+}
+.card[data-kind="now"] { border-color: var(--plane); }
+.card[data-kind="ready"] { border-color: var(--sky); }
+.card[data-kind="ask"] { border-color: var(--route); }
+.card[data-kind="turb"] { border-color: var(--warn); }
+.card[data-kind="landed"] { border-color: var(--ok); }
+.card[data-kind="holding"] { border-color: var(--pane-line); }
+.card .head { display: flex; gap: 10px; align-items: center; }
+.card .tag { font-weight: 700; letter-spacing: 0.04em; }
+.card[data-kind="now"] .tag { color: var(--plane); }
+.card[data-kind="ready"] .tag { color: var(--sky); }
+.card[data-kind="ask"] .tag { color: var(--route); }
+.card[data-kind="turb"] .tag { color: var(--warn); }
+.card[data-kind="landed"] .tag { color: var(--ok); }
+.card .avatar { width: 34px; height: 34px; flex: none; }
+.btns { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pbtn {
+  font: inherit; font-size: 12px; color: var(--pane-ink); background: var(--pane-hi);
+  border: 1px solid var(--pane-line); border-radius: 6px; padding: 1px 9px; cursor: pointer;
+}
+.pbtn:hover { border-color: var(--sky); }
+.pbtn.primary { background: var(--sky); border-color: var(--sky); color: var(--sheet); }
+.pbtn.danger { color: var(--bad); }
+.pbtn.ghost { background: transparent; border-color: transparent; color: var(--sky); padding-inline: 2px; }
+.node { cursor: pointer; background: none; border: 0; padding: 0; font: inherit; color: inherit; text-align: left; }
+.node:hover .t, .node:focus-visible .t { text-decoration: underline; text-decoration-color: var(--sky); text-underline-offset: 3px; }
+.gut { width: 3.2ch; flex: none; display: inline-flex; justify-content: center; }
+.gut svg { width: 26px; height: 26px; margin-top: -3px; }
+.conn { color: var(--pane-dim); white-space: pre; flex: none; }
+.chip { margin-left: auto; padding-left: 10px; white-space: nowrap; }
+.st-checked .chip, .st-tested .chip { color: var(--ok); }
+.st-untested .chip, .st-claimed .chip { color: var(--pane-dim); }
+.st-failed .chip { color: var(--warn); }
+.st-removed .t { text-decoration: line-through; color: var(--pane-dim); }
+.st-now .t { font-weight: 600; }
+.why { color: var(--pane-dim); font-style: italic; }
+.wp-checked .glyph { color: var(--ok); }
+.wp-now .glyph { color: var(--plane); }
+.decision .glyph { color: var(--warn); }
+.decision.kept .glyph { color: var(--pane-dim); }
+.badge { white-space: nowrap; }
+.badge.queued { color: var(--warn); }
+.badge.delivered { color: var(--sky); }
+.badge.acked { color: var(--ok); }
+.editor { border: 1.5px solid var(--sky); border-radius: 8px; padding: 6px 10px 8px; margin: 4px 0 8px 3ch; background: var(--pane-hi); }
+.editor input {
+  font: inherit; color: var(--pane-ink); background: var(--pane-bg); border: 1px solid var(--pane-line);
+  border-radius: 5px; padding: 1px 6px; width: 100%; min-width: 0;
+}
+.editor .consequence { margin-top: 6px; color: var(--pane-dim); }
+.helper { color: var(--pane-dim); }
+.details { color: var(--pane-dim); }
+.details b { color: var(--pane-ink); font-weight: 600; }
+.dashed { border: 1px dashed var(--pane-line); border-radius: 6px; padding: 0 6px; }
+.controls {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px;
+  padding: 12px 14px; border-top: 1px solid var(--pane-line); background: var(--sheet);
+}
+.controls .scene { font-family: var(--display); font-weight: 600; font-size: 1.05rem; letter-spacing: 0.03em; }
+.controls .scene small { font-family: var(--mono); font-weight: 400; font-size: 0.75rem; color: var(--muted); margin-left: 6px; letter-spacing: 0; }
+.cbtn {
+  font: 600 0.88rem var(--body); color: var(--ink); background: var(--sheet); border: 1px solid var(--rule);
+  border-radius: 999px; padding: 5px 14px; cursor: pointer;
+}
+.cbtn:hover { border-color: var(--sky); }
+.cbtn.go { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.cbtn[aria-pressed="true"] { border-color: var(--sky); color: var(--sky); }
+.controls .spacer { flex: 1; }
+.hint { margin-top: 10px; font-size: 0.86rem; color: var(--muted); }
+.toast {
+  position: absolute; right: 12px; bottom: 64px; max-width: 80%;
+  background: var(--ink); color: var(--paper); font-size: 0.8rem; padding: 6px 10px; border-radius: 6px;
+  opacity: 0; transform: translateY(6px); transition: opacity 0.2s, transform 0.2s; pointer-events: none;
+}
+.toast.show { opacity: 1; transform: none; }
+.desk { position: relative; }
+
+/* Briefing items */
+section.item { padding-block: 44px 8px; border-top: 1px solid var(--rule); margin-top: 40px; }
+.item-head { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 8px 24px; align-items: baseline; margin-bottom: 22px; }
+.item-head .label { padding-top: 6px; }
+.item-body { margin-left: calc(9rem + 24px); max-width: var(--measure); display: grid; gap: 16px; }
+.item-body.wide { max-width: none; }
+.item-body p { max-width: var(--measure); }
+.muted { color: var(--muted); }
+
+.pains { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; }
+.pain { border-top: 3px solid var(--route); padding-top: 12px; display: grid; gap: 8px; align-content: start; }
+.pain .n { font-family: var(--display); font-size: 2.1rem; font-weight: 700; line-height: 1; }
+.pain p { font-size: 0.95rem; }
+.pain .src { font-size: 0.8rem; color: var(--muted); }
+
+.tbl-wrap { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 0.93rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--display); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.82rem; color: var(--muted); }
+td.num { font-variant-numeric: tabular-nums; font-family: var(--mono); font-size: 0.86rem; white-space: nowrap; }
+.yes { color: var(--ok); font-weight: 600; }
+.no { color: var(--bad); font-weight: 600; }
+.partial { color: var(--warn); font-weight: 600; }
+
+.callout {
+  border-left: 4px solid var(--route); background: var(--sheet); padding: 16px 18px; border-radius: 0 8px 8px 0;
+  display: grid; gap: 10px; max-width: var(--measure);
+}
+.callout h3 { color: var(--route); }
+.callout ol { margin: 0; padding-left: 1.2rem; display: grid; gap: 6px; }
+
+.twocol { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; }
+.rules { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+.rules li { padding-left: 22px; position: relative; }
+.rules li::before { content: ""; position: absolute; left: 2px; top: 0.6em; width: 10px; height: 2px; background: var(--route); }
+.rules.dont li::before { background: var(--bad); width: 10px; transform: rotate(45deg); }
+
+.mermaid { background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 16px; overflow-x: auto; margin: 0; }
+
+details { border: 1px solid var(--rule); border-radius: 8px; background: var(--sheet); }
+details > summary { cursor: pointer; padding: 12px 16px; font-weight: 600; }
+details > div { padding: 0 16px 16px; display: grid; gap: 12px; }
+pre.quote {
+  margin: 0; white-space: pre-wrap; font-family: var(--mono); font-size: 0.82rem; line-height: 1.55;
+  background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 12px 14px; overflow-x: auto;
+}
+
+.log { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; max-width: 820px; }
+.log li { display: grid; grid-template-columns: 7.5rem minmax(0, 1fr); gap: 16px; padding-block: 12px; border-bottom: 1px solid var(--rule); }
+.log .when { font-family: var(--mono); font-size: 0.8rem; color: var(--muted); padding-top: 3px; }
+.log .when.done { color: var(--ok); font-weight: 600; }
+.log .when.now { color: var(--route); font-weight: 600; }
+.log h3 { font-size: 1.15rem; margin-bottom: 4px; }
+.log p { font-size: 0.94rem; color: var(--muted); }
+
+.asks { display: grid; gap: 14px; counter-reset: ask; max-width: var(--measure); }
+.asks > div { background: var(--sheet); border: 1px solid var(--rule); border-radius: 8px; padding: 14px 16px; }
+.asks h3 { font-size: 1.1rem; margin-bottom: 4px; }
+
+footer { margin-top: 56px; padding-top: 16px; border-top: 2px solid var(--ink); font-size: 0.85rem; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 24px; justify-content: space-between; }
+
+@media (max-width: 920px) {
+  .hero { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .item-head { grid-template-columns: minmax(0, 1fr); }
+  .item-body { margin-left: 0; }
+  .pains, .twocol { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 520px) {
+  .wrap { padding-inline: 16px; }
+  .log li { grid-template-columns: minmax(0, 1fr); gap: 4px; }
+  .controls .spacer { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .toast { transition: none; }
+}
+</style>
+
+<div class="wrap">
+  <header class="mast">
+    <div class="brand">
+      <svg viewBox="0 0 32 32" aria-hidden="true"><g><path d="M5 16 L5 9 L8.5 9 L11 15 Z" fill="#D97757" stroke="#3B2A22" stroke-width="1" stroke-linejoin="round"/><path d="M4.5 15.5 Q4.5 13.8 7 13.8 L22 13.8 Q27 13.8 27 16.6 Q27 19.4 22 19.4 L7 19.4 Q4.5 19.4 4.5 17.6 Z" fill="#D97757" stroke="#3B2A22" stroke-width="1" stroke-linejoin="round"/><rect x="19.5" y="14.8" width="3.6" height="2" rx="0.6" fill="#E8F1FA" stroke="#3B2A22" stroke-width="0.6"/><path d="M12 17.5 L18.5 17.5 L15 24 L11 24 Z" fill="#C2603F" stroke="#3B2A22" stroke-width="1" stroke-linejoin="round"/><line x1="27.6" y1="11.6" x2="27.6" y2="21.6" stroke="#3B2A22" stroke-width="1.6" stroke-linecap="round"/></g></svg>
+      Flight Plan
+    </div>
+    <div class="meta">
+      <span>Design spec <b>v0.3</b></span>
+      <span>14 Oct 2026</span>
+      <span>Built · tested · <b>installed on this Mac</b></span>
+    </div>
+  </header>
+
+  <section class="hero" aria-labelledby="thesis">
+    <div>
+      <h1 id="thesis">See where Claude is, and <em>change course</em> mid-flight.</h1>
+      <p class="lede">Flight Plan is a live map that sits beside your Claude Code chat. It draws the whole job as a route of waypoints, puts a small plane on the step Claude is on, and lets you click any step or choice to change it.</p>
+      <p class="lede">Built for people who build with Claude without reading every tool call: you see what's done, what's next, and what Claude decided for you, in plain words.</p>
+      <dl class="legend" aria-label="What the marks on the map mean">
+        <dt>v</dt><dd>done and <b>checked</b>: a test or check the map saw pass</dd>
+        <dt>*</dt><dd>waypoint in progress; the ✈ sits on the exact step</dd>
+        <dt>o</dt><dd>not started yet</dd>
+        <dt>&lt;&gt;</dt><dd>a choice Claude made without asking you, flagged for review</dd>
+        <dt>~</dt><dd>your change, waiting for Claude to pick it up</dd>
+        <dt>⚑</dt><dd>landing: everything checked</dd>
+      </dl>
+    </div>
+
+    <div class="exhibit">
+      <div class="desk">
+        <div class="desk-bar" aria-hidden="true">
+          <span class="dots"><i></i><i></i><i></i></span>
+          <span class="tab">Flight Plan</span>
+          <span>beside the chat · simulated</span>
+        </div>
+        <div class="pane-scroll">
+          <div class="pane" id="pane" aria-live="polite"></div>
+        </div>
+        <div class="controls">
+          <button class="cbtn" id="prev" type="button" aria-label="Previous moment">◀ Back</button>
+          <button class="cbtn go" id="next" type="button">Next ▶</button>
+          <div class="scene" id="scene"></div>
+          <span class="spacer"></span>
+          <button class="cbtn" id="sound" type="button" aria-pressed="false">Sound: off</button>
+        </div>
+        <div class="toast" id="toast" role="status"></div>
+      </div>
+      <p class="hint">Step through a real flight with Next. Click any step title to change it, or press <b>review</b> on Claude's choice. Your edit lands on the map at once; watch its badge go from queued to acknowledged as Claude reaches the next checkpoint.</p>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="why">
+    <div class="item-head"><span class="label">Item 1 · Why</span><h2 id="why">What people lose track of today</h2></div>
+    <div class="item-body wide">
+      <div class="pains">
+        <div class="pain">
+          <span class="n">#1</span>
+          <p><b>The plan drifts from reality.</b> To-do lists stop updating; nobody can tell which step the agent is on. It was the most common complaint across every tool we looked at.</p>
+          <span class="src">Cursor forum (5+ threads), Claude Code issue #48189, community kanban viewers built because their authors "had no idea what was happening"</span>
+        </div>
+        <div class="pain">
+          <span class="n">#2</span>
+          <p><b>Edits get lost or wait for the whole run.</b> Changing one step means re-planning everything, or a message that lands only after the agent finishes.</p>
+          <span class="src">Claude Code #10602 and duplicates; Cursor plan edits ignored on Build; Codex steer queued to the end</span>
+        </div>
+        <div class="pain">
+          <span class="n">0</span>
+          <p><b>Tools that combine all of it.</b> A live map, a "you are here" marker, plain language, and click-to-change that reaches the running agent. Fun visualizers exist (Pixel Agents, ~88k installs) but show activity, not position in a plan.</p>
+          <span class="src">Survey of Devin, Cursor, Replit, Copilot, Windsurf, Cline, Codex, Jules, Kiro, Lovable and ~15 Claude Code community projects</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="how">
+    <div class="item-head"><span class="label">Item 2 · How it flies</span><h2 id="how">Claude files the plan; the map watches the work</h2></div>
+    <div class="item-body">
+      <p>Flight Plan is a Claude Code mod: a small plugin that draws a pane in the desktop app and gives Claude one tool, <code>route</code>. Claude files the route once, naming each step's files and how it will check them. From then on the map moves the plane on what it actually sees: each file Claude writes, each test it runs, and Claude's own progress reports.</p>
+      <pre class="mermaid">
+sequenceDiagram
+  participant You
+  participant Map as Flight Plan pane
+  participant Claude
+  You->>Claude: "Add Google sign-in"
+  Claude->>Map: route set: waypoints, steps, files, checks
+  Map-->>You: Route drawn. Taking off in 30 s (press Hold to edit first)
+  Claude->>Claude: writes files, runs tests
+  Note over Map: each write to a step's files moves the plane;&lt;br/&gt;a passing test marks steps "checked"
+  You->>Map: Remove "Add a Sign out button"
+  Map-->>Claude: your change rides the next tool result
+  Claude->>Map: route step, acks e1
+  Map-->>You: badge: acknowledged
+      </pre>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="flights">
+    <div class="item-head"><span class="label">Item 3 · Test flights</span><h2 id="flights">What Phase 0 found, and what changed</h2></div>
+    <div class="item-body">
+      <p>We ran five real tasks twice as independent Opus 5.5 sessions (a greeter, a to-do module, a signup page, a Markdown converter, a saved to-do app), with an early version of the mod watching every call. Total cost about $3.30.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Question</th><th>Answer</th><th>Evidence</th></tr></thead>
+          <tbody>
+            <tr><td>Does Claude file a plan before it starts editing?</td><td class="yes">Yes</td><td class="num">10/10 runs</td></tr>
+            <tr><td>Do the files it declares match the files it writes?</td><td class="yes">Yes</td><td class="num">35/35 writes</td></tr>
+            <tr><td>Does it work through steps in plan order?</td><td class="yes">Mostly</td><td class="num">9/10 runs</td></tr>
+            <tr><td>Does it report each step boundary itself?</td><td class="no">No</td><td class="num">1/5 routes closed, even with nudges</td></tr>
+            <tr><td>Does it read and apply your edits?</td><td class="partial">Usually</td><td class="num">2/3 acknowledged</td></tr>
+            <tr><td>Does it obey "the user removed this step"?</td><td class="yes">Yes</td><td class="num">skipped the file, told the user why</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>Opus 5.5 plans, writes all its files in one burst, runs the tests, and answers. Its natural checkpoints are much coarser than the steps it plans. So asking it to report every step was the wrong foundation.</p>
+      <div class="callout">
+        <h3>The design change</h3>
+        <ol>
+          <li><b>The plane moves on evidence.</b> The first write to a step's declared files moves the plane there; a passing test marks the steps it covers "checked". Claude's own reports still count, but the map no longer waits for them. It still never moves on a guess, and never backwards past work it saw.</li>
+          <li><b>Your edits take the fast lane.</b> A change rides back on Claude's very next tool result, seconds after you click, worded "finish what you're doing in this step, then apply this".</li>
+          <li><b>Some hooks are closed to mods.</b> A built-in security layer keeps mods out of the system prompt and the stop hook. Flight Plan's instructions ride your messages instead, and the end of a turn is reconciled on the map: anything Claude didn't close is shown as such, with a one-click "ask Claude to update the map".</li>
+        </ol>
+      </div>
+      <p class="muted">Replaying all ten recorded runs through the evidence tracker put the plane on the right step after every write; 29 of 36 steps finished in the right state, and the seven misses had known fixes, now built in.</p>
+      <h3 style="margin-top:8px">Flights with the finished mod</h3>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Flight</th><th>What happened</th><th>Result</th></tr></thead>
+          <tbody>
+            <tr><td>Signup page, 6 steps</td><td>Claude filed the route, replied with one line and stopped at the gate. A resumed session got its map back; on "Go" Claude worked, then closed steps in two batches.</td><td class="yes">6/6 checked · landed · $0.94</td></tr>
+            <tr><td>Greeter, 2 steps</td><td>Took off at once (small job), wrote two files, ran the tests, closed both steps in one call.</td><td class="yes">2/2 checked · landed · $0.19</td></tr>
+            <tr><td>This build itself</td><td>The last stretch of work was flown on the map in this app: review fixes, your look, the move to a folder you keep, the guide, this page.</td><td class="yes">you confirmed the map looks right</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted">An independent code review (three reviewers, every finding checked by two skeptics; 127 agents) confirmed 39 findings, all fixed, each now pinned by a test. Real flights caught one more the tests could not: a plugin tool must answer with text, not an object.</p>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="change">
+    <div class="item-head"><span class="label">Item 4 · Changing course</span><h2 id="change">What happens when you edit mid-flight</h2></div>
+    <div class="item-body wide">
+      <p style="max-width: var(--measure)">Your change lands on the map the moment you click, and it wins over Claude's version. Claude finishes the step it's on (no half-edited files), then re-plans around you. One control can stop it immediately, and it always asks twice.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>You change</th><th>While Claude is working</th><th>While Claude is idle</th></tr></thead>
+          <tbody>
+            <tr><td>A step it hasn't started</td><td>Rides the next tool result; a removed step's files are blocked once</td><td>Rides your next message, or press Send now</td></tr>
+            <tr><td>The step it's on</td><td>Applied after this step ends; Stop now (asks twice) if you can't wait</td><td>Apply now starts a short turn</td></tr>
+            <tr><td>Remove or reorder</td><td>Your order and deletions win; Claude can't bring a removed step back</td><td>Same, on your next message</td></tr>
+            <tr><td>A choice Claude made</td><td>The map shows what gets redone ("redo Remember the login") before you confirm</td><td>Sent at once when finished work must change</td></tr>
+            <tr><td>Add a waypoint</td><td>Drawn dashed, "proposed by you", until Claude plans it</td><td>Rides your next message, or Start on it now</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="muted" style="max-width: var(--measure)">Every change carries a badge until Claude confirms it: <b>queued ~</b>, then <b>delivered ✓</b> when Claude has read it, then <b>acknowledged ✓✓</b> when its next update reflects it. If Claude doesn't acknowledge after two chances, the badge says so and offers Send now.</p>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="rules">
+    <div class="item-head"><span class="label">Item 5 · Ground rules</span><h2 id="rules">Honest first, then fun</h2></div>
+    <div class="item-body wide">
+      <div class="twocol">
+        <div>
+          <h3 style="margin-bottom:12px">The map always</h3>
+          <ul class="rules">
+            <li>Tells "checked" (a test it saw pass) apart from "done, not tested" (Claude's word only).</li>
+            <li>Says when it's stale: "Claude last checked in 3 min ago".</li>
+            <li>Tells waiting-for-you, thinking hard, and stuck apart from real events, never from silence.</li>
+            <li>Counts steps, never percentages or arrival times. When the route grows, the bar moves back and says why.</li>
+            <li>Keeps tool calls, commands and diffs out of sight unless you press <b>details</b>.</li>
+          </ul>
+        </div>
+        <div>
+          <h3 style="margin-bottom:12px">Fun is earned</h3>
+          <ul class="rules">
+            <li>The plane flies to the next step, cruises while Claude works, circles while it waits for you, shakes through turbulence, and lands at the flag.</li>
+            <li>A soft tick per checked step, a chime per finished waypoint, a cabin-chime knock when Claude needs you, a fanfare on landing. One sound per 2 s, one switch to mute.</li>
+            <li>Confetti only for work the map saw verified.</li>
+          </ul>
+          <h3 style="margin-block:18px 12px">Never</h3>
+          <ul class="rules dont">
+            <li>Points, streaks, levels or speed scores.</li>
+            <li>Celebrating work nobody checked.</li>
+            <li>Dropping one of your edits without a badge saying so.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="decisions">
+    <div class="item-head"><span class="label">Item 6 · Your calls</span><h2 id="decisions">Decisions on record</h2></div>
+    <div class="item-body wide">
+      <div class="tbl-wrap">
+        <table>
+          <tbody>
+            <tr><th scope="row">Worst moments</th><td>During a long run, and just before it starts</td></tr>
+            <tr><th scope="row">Metaphor</th><td>A flight plan: waypoints, a plane, holding pattern, turbulence, landing</td></tr>
+            <tr><th scope="row">Map depth</th><td>Waypoints (features) with their steps; files and commands behind <b>details</b></td></tr>
+            <tr><th scope="row">Claude's own choices</th><td>Flagged as a fork for your review; Claude keeps going</td></tr>
+            <tr><th scope="row">Edits mid-run</th><td>Applied at the next checkpoint; the step in progress finishes first</td></tr>
+            <tr><th scope="row">When it shows</th><td>Any task with two or more steps, plan mode or not</td></tr>
+            <tr><th scope="row">Departure</th><td>30 s countdown with Take off now and Hold; small jobs and plans you already approved take off at once</td></tr>
+            <tr><th scope="row">Cost</th><td>On the landing card and on hover, never ticking in the footer</td></tr>
+            <tr><th scope="row">Sound</th><td>On: tick, chime, knock, fanfare</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="contract">
+    <div class="item-head"><span class="label">Item 7 · The contract</span><h2 id="contract">What Claude is told</h2></div>
+    <div class="item-body">
+      <p>Claude gets one tool, <code>mcp__flightplan__route</code>, with five operations, and a short note on each of your messages. Nothing about the live map goes into the system prompt, so it never invalidates Claude's prompt cache.</p>
+      <div class="tbl-wrap">
+        <table>
+          <thead><tr><th>Op</th><th>When Claude calls it</th><th>Cost</th></tr></thead>
+          <tbody>
+            <tr><td><code>set</code></td><td>Once, when the shape of the work is clear: waypoints, steps, each step's files and check</td><td class="num">300–1,200 tokens, once</td></tr>
+            <tr><td><code>step</code></td><td>Finishing and starting steps, with evidence such as "node --test: 11 passed"</td><td class="num">~50 tokens</td></tr>
+            <tr><td><code>patch</code></td><td>Adding, dropping, rewording or reordering steps it hasn't started</td><td class="num">~100 tokens</td></tr>
+            <tr><td><code>decide</code></td><td>Any choice you didn't ask for: a library, a structure, a skipped step</td><td class="num">~80 tokens</td></tr>
+            <tr><td><code>get</code></td><td>Re-reading the route after a long session is compacted</td><td class="num">~15 tokens per step</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <details>
+        <summary>The note that rides each of your messages</summary>
+        <div>
+          <pre class="quote">Flight Plan is on: the user follows this task on a live map. For work with two or more steps, keep it current with mcp__flightplan__route: set once, then step at every step boundary (finish + start in one call). Close the last step before you reply. Map now: step 4 of 9 in progress, s5 "Saving the login so it survives a refresh".</pre>
+        </div>
+      </details>
+      <details>
+        <summary>The tool description (1,901 of 2,048 characters)</summary>
+        <div>
+          <pre class="quote">Flight Plan is the user's live map of this task: a side pane that draws your plan as a route of waypoints (features), the steps under each, and decisions, with a plane on the step you are on. The user watches this map, not your tool calls, and edits nodes there; their edits come back in this tool's results. Use it for any task with two or more steps, plan mode or not; never for one-off questions.
+
+Wording comes first: write for someone who does not code. A title is the outcome in the user's words ("Let users log in with Google"), never a file, function or library name; why is one plain line. Paths go in files, commands in check.
+
+Ops (field op): set, step, patch, decide, get (as above).
+
+Every result carries version and userEdits: nodes the user renamed, removed, reordered, added or skipped, and decisions they flipped. Apply them before starting the next step, echo their ids in acks, and pass version back as baseVersion. On a conflict the user's wording, order and deletions win.</pre>
+        </div>
+      </details>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="logbook">
+    <div class="item-head"><span class="label">Item 8 · Flight log</span><h2 id="logbook">Where the build is</h2></div>
+    <div class="item-body wide">
+      <ol class="log">
+        <li><span class="when done">Done</span><div><h3>Test flights</h3><p>Ten headless runs, delivery-channel tests, rendering tests on desktop and terminal. Found the reporting gap and the closed hooks; redesigned around evidence.</p></div></li>
+        <li><span class="when done">Done</span><div><h3>The route core</h3><p>The route tool, the evidence tracker, your-edit-wins merging, turn-end reconciliation, resume after a restart.</p></div></li>
+        <li><span class="when done">Done</span><div><h3>The pane, live signals and editing</h3><p>The map and its cards, the band above the prompt, <code>/flight</code>; waiting, turbulence and helpers from real events; editors, badges, Hold, Pause, Stop now.</p></div></li>
+        <li><span class="when done">Done</span><div><h3>Fun</h3><p>The plane's poses, ticks, chimes, the knock and the landing fanfare, with a calm mode and one mute.</p></div></li>
+        <li><span class="when done">Done</span><div><h3>Review and install</h3><p>39 confirmed findings fixed, 37 tests; installed for your account from <code>~/Projects/flightplan</code>.</p></div></li>
+        <li><span class="when">Later</span><div><h3>Sharing</h3><p>Push the folder to GitHub; teammates install with one line. Optional: drag to reorder steps.</p></div></li>
+      </ol>
+    </div>
+  </section>
+
+  <section class="item" aria-labelledby="asks">
+    <div class="item-head"><span class="label">Item 9 · Next</span><h2 id="asks">What to try next</h2></div>
+    <div class="item-body">
+      <div class="asks">
+        <div><h3>Fly a real job</h3><p>Open a new Claude Code session on one of your projects and ask for something with a few steps. The map opens beside the chat; try holding at the gate and removing a step.</p></div>
+        <div><h3>Tune it</h3><p>Departure, countdown length, sounds and the plane are in <code>/config</code> under Flight Plan.</p></div>
+        <div><h3>Share it</h3><p>When it feels right, push <code>~/Projects/flightplan</code> to GitHub and your team installs it with one line.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Flight Plan · a Claude Code mod for the desktop app</span>
+    <span>Spec v0.3 · 14 Oct 2026</span>
+  </footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var reduceMotion = false;
+  try { reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches; } catch (e) { reduceMotion = false; }
+
+  function plane(pose) {
+    var anim = !reduceMotion;
+    var bob = anim ? '<animateTransform attributeName="transform" type="translate" values="0 0;0 -1.2;0 0" dur="1.6s" repeatCount="indefinite"/>' : '';
+    var prop = anim ? '<animateTransform attributeName="transform" type="scale" values="1 1;1 0.12;1 1" dur="0.18s" repeatCount="indefinite"/>' : '';
+    var trail = anim ? '<animate attributeName="opacity" values="0.15;0.8;0.15" dur="0.8s" repeatCount="indefinite"/>' : '';
+    var shake = (anim && pose === 'turb') ? '<animateTransform attributeName="transform" type="rotate" values="-6 16 16;6 16 16;-6 16 16" dur="0.35s" repeatCount="indefinite" additive="sum"/>' : '';
+    var circle = (anim && pose === 'holding') ? '<animateTransform attributeName="transform" type="rotate" values="0 16 16;-10 16 16;0 16 16;10 16 16;0 16 16" dur="2.4s" repeatCount="indefinite" additive="sum"/>' : '';
+    var bubble = pose === 'holding' ? '<circle cx="25" cy="7" r="5" fill="#FFFFFF" stroke="#3B2A22" stroke-width="0.8"/><text x="25" y="9.6" font-size="7" text-anchor="middle" font-family="sans-serif" fill="#3B2A22">?</text>' : '';
+    return '<svg viewBox="0 0 32 32" role="img" aria-label="the plane: Claude is here"><g>' + bob + shake + circle +
+      '<g stroke="#9CA3AF" stroke-width="1.2" stroke-linecap="round"><line x1="0.5" y1="15" x2="3" y2="15">' + trail + '</line><line x1="1" y1="18.5" x2="3.5" y2="18.5">' + trail + '</line></g>' +
+      '<path d="M5 16 L5 9 L8.5 9 L11 15 Z" fill="#D97757" stroke="#3B2A22" stroke-width="1" stroke-linejoin="round"/>' +
+      '<path d="M4.5 15.5 Q4.5 13.8 7 13.8 L22 13.8 Q27 13.8 27 16.6 Q27 19.4 22 19.4 L7 19.4 Q4.5 19.4 4.5 17.6 Z" fill="#D97757" stroke="#3B2A22" stroke-width="1" stroke-linejoin="round"/>' +
+      '<rect x="19.5" y="14.8" width="3.6" height="2" rx="0.6" fill="#E8F1FA" stroke="#3B2A22" stroke-width="0.6"/>' +
+      '<circle cx="16" cy="15.9" r="0.7" fill="#3B2A22"/><circle cx="13.6" cy="15.9" r="0.7" fill="#3B2A22"/>' +
+      '<path d="M12 17.5 L18.5 17.5 L15 24 L11 24 Z" fill="#C2603F" stroke="#3B2A22" stroke-width="1" stroke-linejoin="round"/>' +
+      '<g transform="translate(27.6 16.6)"><g>' + prop + '<line x1="0" y1="-5" x2="0" y2="5" stroke="#3B2A22" stroke-width="1.6" stroke-linecap="round"/></g></g>' +
+      bubble + '</g></svg>';
+  }
+
+  var ROUTE = [
+    { id: 'f1', title: 'Set up the project pieces', why: 'so the app has a place for logins', steps: [
+      { id: 's1', title: 'Add the sign-in settings', files: ['auth.config.ts'] } ] },
+    { id: 'f2', title: 'Let users log in with Google', why: 'so people can use their Google account', steps: [
+      { id: 's2', title: 'Add the Google sign-in button', files: ['LoginButton.tsx'] },
+      { id: 's3', title: 'Handle the reply from Google', files: ['callback.ts'] } ] },
+    { id: 'f3', title: 'Keep users logged in between visits', why: 'so people stay logged in', steps: [
+      { id: 's4', title: 'Remember the login on this device', files: ['session.ts'] },
+      { id: 's5', title: 'Saving the login so it survives a refresh', files: ['session.ts', 'app.tsx'] },
+      { id: 's6', title: 'Check it all works end to end', files: [] } ] },
+    { id: 'f4', title: 'Add a "Sign out" button', why: 'so people can leave safely', steps: [
+      { id: 's7', title: 'Show a Sign out button', files: ['Header.tsx'] },
+      { id: 's8', title: 'Clear the saved login', files: ['logout.ts'] } ] },
+    { id: 'f5', title: 'Show who is logged in', why: 'so people know which account is on', steps: [
+      { id: 's9', title: 'Show the name and photo in the header', files: ['Header.tsx'] } ] }
+  ];
+  var ALL = [];
+  ROUTE.forEach(function (w) { w.steps.forEach(function (s) { s.wp = w.id; ALL.push(s); }); });
+
+  function statuses(spec) {
+    var out = {};
+    ALL.forEach(function (s) { out[s.id] = 'pending'; });
+    Object.keys(spec).forEach(function (k) { out[k] = spec[k]; });
+    return out;
+  }
+  function upTo(id, last) {
+    var out = {};
+    for (var i = 0; i < ALL.length; i++) {
+      if (ALL[i].id === id) break;
+      out[ALL[i].id] = 'checked';
+    }
+    out[id] = last;
+    return out;
+  }
+
+  var SCENES = [
+    { label: 'Ready for takeoff', sub: '1/8', card: 'ready', plane: null, st: statuses({}), minutes: 0, decision: false },
+    { label: 'Climbing out', sub: '2/8', card: 'now', plane: 's1', st: statuses({ s1: 'now' }), doing: 'Adding the sign-in settings',
+      activity: 'editing auth.config.ts · 0:12 on this step', cmd: 'none yet', minutes: 2, decision: false, last: '0:12' },
+    { label: 'Cruising', sub: '3/8', card: 'now', plane: 's3', st: statuses(upTo('s3', 'now')), doing: 'Handling the reply from Google',
+      activity: 'editing callback.ts · 1:05 on this step', cmd: 'node --test → runs the automatic checks: 6 passed', minutes: 9, decision: true, last: '1:05' },
+    { label: 'Mid-flight', sub: '4/8', card: 'now', plane: 's5', st: statuses(Object.assign(upTo('s4', 'tested'), { s5: 'now' })), doing: 'Saving the login so it survives a refresh',
+      activity: 'editing session.ts · 0:42 on this step', helper: 'finding where sessions are read', cmd: 'node --test → runs the automatic checks: 11 passed', minutes: 23, decision: true, last: '0:42' },
+    { label: 'Your turn', sub: '5/8', card: 'ask', plane: 's5', pose: 'holding', st: statuses(Object.assign(upTo('s4', 'tested'), { s5: 'now' })), minutes: 24, decision: true, last: '1:10' },
+    { label: 'Turbulence', sub: '6/8', card: 'turb', plane: 's6', pose: 'turb', st: statuses(upTo('s6', 'now')), retry: 3, minutes: 31, decision: true, last: '2:40',
+      cmd: 'node --test → runs the automatic checks: 1 failing (same error 3 times)' },
+    { label: 'Descent', sub: '7/8', card: 'now', plane: 's8', st: statuses(upTo('s8', 'now')), doing: 'Clearing the saved login',
+      activity: 'editing logout.ts · 0:20 on this step', cmd: 'node --test → runs the automatic checks: 17 passed', minutes: 38, decision: true, last: '0:20' },
+    { label: 'Landed', sub: '8/8', card: 'landed', plane: null, st: statuses(Object.assign(upTo('s9', 'untested'))), minutes: 41, decision: true, last: '' }
+  ];
+
+  var state = { scene: 0, open: null, decisionOpen: false, edits: [], details: false, sound: false, countdown: 30, held: false, kept: false, switched: null, nextEdit: 1 };
+  var paneEl = document.getElementById('pane');
+  var sceneEl = document.getElementById('scene');
+  var toastEl = document.getElementById('toast');
+  var timer = null;
+
+  function esc(text) {
+    return String(text).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; });
+  }
+  function toast(text) {
+    toastEl.textContent = text;
+    toastEl.classList.add('show');
+    clearTimeout(toast.t);
+    toast.t = setTimeout(function () { toastEl.classList.remove('show'); }, 2600);
+  }
+  var audio = null;
+  function tick(freq) {
+    if (!state.sound) return;
+    try {
+      audio = audio || new (window.AudioContext || window.webkitAudioContext)();
+      var o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = freq || 1320; o.type = 'sine';
+      g.gain.setValueAtTime(0.0001, audio.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.18, audio.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.14);
+      o.connect(g); g.connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.16);
+    } catch (e) { /* sound is optional */ }
+  }
+
+  function editState(edit) {
+    var age = state.scene - edit.at;
+    if (age <= 0) return 'queued';
+    if (age === 1) return 'delivered';
+    return 'acked';
+  }
+  function badge(edit) {
+    var s = editState(edit);
+    var text = s === 'queued' ? 'queued ~ after this step' : s === 'delivered' ? 'delivered ✓ Claude is reading it' : 'acknowledged ✓✓';
+    return '<span class="badge ' + s + '">' + text + '</span>' +
+      (s === 'queued' ? ' <button class="pbtn ghost" data-act="undo" data-edit="' + edit.n + '">undo</button>' : '');
+  }
+  function editFor(id) {
+    for (var i = state.edits.length - 1; i >= 0; i--) if (state.edits[i].target === id) return state.edits[i];
+    return null;
+  }
+
+  function stepStatus(scene, s) {
+    var edit = editFor(s.id);
+    if (edit && edit.kind === 'remove') return 'removed';
+    if (edit && edit.kind === 'skip') return 'skipped';
+    return scene.st[s.id];
+  }
+  function titleOf(s) {
+    var edit = editFor(s.id);
+    return edit && edit.kind === 'rename' ? edit.text : s.title;
+  }
+  function chipFor(st) {
+    return { checked: 'checked', tested: 'tests passed', untested: 'done, not tested', failed: 'done? last test failed',
+      now: 'now', removed: 'removed by you', skipped: 'skipped by you', pending: '' }[st] || '';
+  }
+
+  function counts(scene) {
+    var total = 0, done = 0;
+    ALL.forEach(function (s) {
+      var st = stepStatus(scene, s);
+      if (st === 'removed') return;
+      total++;
+      if (st === 'checked' || st === 'tested' || st === 'untested' || st === 'skipped') done++;
+    });
+    return { total: total, done: done };
+  }
+  function stepIndex(scene) {
+    var n = 0, found = 0;
+    ALL.forEach(function (s) {
+      if (stepStatus(scene, s) === 'removed') return;
+      n++;
+      if (s.id === scene.plane) found = n;
+    });
+    return found;
+  }
+
+  function cardHtml(scene) {
+    var c = counts(scene);
+    if (scene.card === 'ready') {
+      var clock = state.held ? 'clock paused while you edit' : 'taking off in ' + state.countdown + ' s';
+      return '<div class="card" data-kind="ready"><div class="head"><span class="tag">READY FOR TAKEOFF</span><span>' + c.total + ' steps under 5 waypoints · ' + clock + '</span></div>' +
+        '<div class="dim">Click any step to change it before Claude starts.</div>' +
+        '<div class="btns"><button class="pbtn primary" data-act="next">Take off now</button><button class="pbtn" data-act="hold">' + (state.held ? 'Held' : 'Hold, let me look') + '</button></div></div>';
+    }
+    if (scene.card === 'ask') {
+      return '<div class="card" data-kind="ask"><div class="head"><span class="avatar">' + plane('holding') + '</span><span class="tag">YOUR TURN</span><span>Claude asks: which login providers?</span></div>' +
+        '<div class="dim">Google, GitHub or both. Answer in the chat; the plane circles until you do.</div>' +
+        '<div class="btns"><button class="pbtn" data-act="toast" data-text="Scrolls the chat to Claude\'s question">Show me</button></div></div>';
+    }
+    if (scene.card === 'turb') {
+      return '<div class="card" data-kind="turb"><div class="head"><span class="avatar">' + plane('turb') + '</span><span class="tag">TURBULENCE</span><span>' + scene.retry + ' tries on "Check it all works…" (same error)</span></div>' +
+        '<div class="dim">It usually gets there, but you can nudge it.</div>' +
+        '<div class="btns"><button class="pbtn" data-act="toast" data-text="Nudge sent: try a different approach for this step">Try another way</button><button class="pbtn" data-act="skipNow">Skip this step</button><button class="pbtn" data-act="toast" data-text="Hidden for 10 minutes">Keep trying</button></div></div>';
+    }
+    if (scene.card === 'landed') {
+      var removed = state.edits.filter(function (e) { return e.kind === 'remove'; }).length;
+      return '<div class="card" data-kind="landed"><div class="head"><span class="tag">LANDED</span><span>' + c.total + ' steps · 9 files · 17 tests passing · 41 min</span></div>' +
+        '<div class="spread"><span>1 done but not tested</span><button class="pbtn" data-act="toast" data-text="Asked Claude to run the checks for that step">Ask Claude to check</button></div>' +
+        (state.kept || state.switched ? '' : '<div class="spread"><span>1 choice to review</span><button class="pbtn" data-act="review">Review</button></div>') +
+        (removed ? '<div class="dim">' + removed + ' step' + (removed > 1 ? 's' : '') + ' removed by you</div>' : '') +
+        '<div class="dim">This flight cost $0.84 (shown only here)</div></div>';
+    }
+    var details = state.details ? '<div class="details">working in: <b>' + esc((ALL.filter(function (s) { return s.id === scene.plane; })[0] || { files: [] }).files.join('  ') || '—') + '</b><br>last check: ' + esc(scene.cmd || 'none yet') + '</div>' : '';
+    return '<div class="card" data-kind="now"><div class="head"><span class="tag">NOW</span><span>' + esc(scene.doing) + '</span></div>' +
+      '<div class="dim">' + esc(scene.activity) + '</div>' + details +
+      '<div class="btns"><button class="pbtn" data-act="toast" data-text="Claude will finish this step, update the map, and stop">Pause after this step</button><button class="pbtn" data-act="addWp">Add a feature</button><button class="pbtn" data-act="toast" data-text="Asked Claude for a 3-line summary (about one message of usage)">Where?</button></div></div>';
+  }
+
+  function editorHtml(s, scene) {
+    var st = stepStatus(scene, s);
+    var isNow = st === 'now';
+    var isDone = st === 'checked' || st === 'tested' || st === 'untested';
+    var actions;
+    if (isNow) {
+      actions = '<button class="pbtn primary" data-act="edit" data-kind="rename" data-id="' + s.id + '">Change after this step</button><button class="pbtn danger" data-act="stopNow" data-id="' + s.id + '">Stop now</button>';
+    } else if (isDone) {
+      actions = '<button class="pbtn" data-act="edit" data-kind="redo" data-id="' + s.id + '">Redo this</button><button class="pbtn" data-act="toast" data-text="Marked: you checked it">I checked it</button>';
+    } else {
+      actions = '<button class="pbtn" data-act="edit" data-kind="rename" data-id="' + s.id + '">Save new wording</button><button class="pbtn" data-act="edit" data-kind="skip" data-id="' + s.id + '">Skip it</button><button class="pbtn danger" data-act="edit" data-kind="remove" data-id="' + s.id + '">Remove it</button>';
+    }
+    var consequence = isNow ? 'Claude finishes what it is doing, then changes course.' : isDone ? 'Claude redoes this after the current step.' : 'Claude sees this after the current step ends.';
+    return '<div class="editor"><label class="dim" for="rename-' + s.id + '">Change it to</label>' +
+      '<input id="rename-' + s.id + '" value="' + esc(titleOf(s)) + '">' +
+      '<div class="btns">' + actions + '<button class="pbtn ghost" data-act="close">Close</button></div>' +
+      '<div class="consequence">' + consequence + '</div></div>';
+  }
+
+  function decisionHtml(scene) {
+    if (!scene.decision) return '';
+    var kept = state.kept, switched = state.switched;
+    var line = switched ? 'You chose Clerk over NextAuth' : 'Claude chose NextAuth over Clerk';
+    var right = kept ? '<span class="chip dim">kept</span>' : switched ? '' : '<button class="pbtn" data-act="review">review</button>';
+    var html = '<div class="row decision' + (kept ? ' kept' : '') + '"><span class="glyph">&lt;&gt;</span>&nbsp;<span style="flex:1">' + line + '</span>' + right + '</div>' +
+      '<div class="row"><span class="conn">|  </span><span class="why">' + (switched ? 'your change' : 'because it is already in the project') + '</span></div>';
+    var edit = editFor('d1');
+    if (edit) html += '<div class="row"><span class="conn">|  </span><span>' + badge(edit) + '</span></div>';
+    if (state.decisionOpen) {
+      html += '<div class="editor"><div><b>Which login library?</b></div><div class="dim">because it is already in the project</div>' +
+        '<div>if you switch: redo "Remember the login" (done), change "Saving the login" (in progress)</div>' +
+        '<div class="btns"><button class="pbtn" data-act="keep">Keep NextAuth</button><button class="pbtn primary" data-act="switch">Switch to Clerk</button>' +
+        '<button class="pbtn" data-act="toast" data-text="Type your own option; Claude re-plans around it">Something else…</button><button class="pbtn" data-act="toast" data-text="Claude will explain in one short paragraph">Ask Claude why</button>' +
+        '<button class="pbtn" data-act="toast" data-text="From now on Claude asks before choosing libraries">Ask me first next time</button><button class="pbtn ghost" data-act="close">Close</button></div></div>';
+    }
+    return html + '<div class="row conn">|</div>';
+  }
+
+  function render() {
+    var scene = SCENES[state.scene];
+    var c = counts(scene);
+    var idx = stepIndex(scene);
+    var bar = '[' + '<span class="on">' + '#'.repeat(c.done) + '</span><span class="off">' + '.'.repeat(Math.max(0, c.total - c.done)) + '</span>]';
+    var head = '<div class="spread"><span class="goal">Add Google sign-in to my app</span><span class="dim">' +
+      (scene.card === 'ready' ? 'not started' : scene.card === 'landed' ? 'landed' : 'step ' + idx + ' of ' + c.total) + '</span></div>' +
+      '<div class="spread bar"><span>' + bar + ' <span class="dim">' + c.done + ' done · ~' + (c.total - c.done) + ' left</span></span><span class="dim">' +
+      (scene.minutes ? (scene.card === 'landed' ? 9 : Math.min(9, 1 + idx)) + ' files · ' + (scene.card === 'turb' ? '1 failing' : (idx > 2 ? 11 : 0) + ' tests') : 'no files yet') + '</span></div>';
+
+    var trail = '<div class="row rule">' + '-'.repeat(19) + ' route ' + '-'.repeat(19) + '</div>';
+    var decisionPlaced = false;
+    ROUTE.forEach(function (w, wi) {
+      var sts = w.steps.map(function (s) { return stepStatus(scene, s); });
+      var live = sts.filter(function (x) { return x !== 'removed'; });
+      var allDone = live.length > 0 && live.every(function (x) { return x === 'checked' || x === 'tested' || x === 'untested' || x === 'skipped'; });
+      var allChecked = live.length > 0 && live.every(function (x) { return x === 'checked' || x === 'tested'; });
+      var isNow = w.steps.some(function (s) { return s.id === scene.plane; });
+      var removedAll = live.length === 0;
+      var expanded = Boolean(w.open) || isNow || (scene.card === 'ready' && wi === 0) || w.steps.some(function (s) { return s.id === state.open; });
+      var glyph = removedAll ? 'x' : allDone ? 'v' : isNow ? '*' : 'o';
+      var right = removedAll ? 'removed by you' : allDone ? (allChecked ? 'checked' : 'done, not tested') : isNow ? (live.indexOf('now') + 1 || 1) + ' of ' + live.length : live.length + ' step' + (live.length > 1 ? 's' : '');
+      var cls = allDone ? 'wp-checked' : isNow ? 'wp-now' : '';
+      trail += '<div class="row ' + cls + '"><span class="glyph">' + glyph + '</span>&nbsp;&nbsp;<button class="node" data-act="expand" data-id="' + w.id + '"><span class="t">' + esc(w.title) + '</span></button><span class="chip dim">' + right + '</span></div>';
+      if (!expanded) {
+        trail += '<div class="row"><span class="conn">|  </span><span class="why">' + esc(w.why) + '</span></div>';
+      }
+      if (expanded) {
+        w.steps.forEach(function (s, si) {
+          var st = stepStatus(scene, s);
+          var last = si === w.steps.length - 1;
+          var gut = s.id === scene.plane && scene.card !== 'landed' ? plane(scene.pose) : '<span>' + ({ checked: 'v', tested: 'v', untested: 'v', failed: '!', now: '*', removed: 'x', skipped: '-' }[st] || 'o') + '</span>';
+          trail += '<div class="row st-' + st + '"><span class="conn">' + (last ? "'- " : '|- ') + '</span><span class="gut">' + gut + '</span><button class="node" data-act="open" data-id="' + s.id + '"><span class="t">' + esc(titleOf(s)) + '</span></button><span class="chip">' + chipFor(st) + '</span></div>';
+          if (s.id === scene.plane && scene.card === 'now') {
+            trail += '<div class="row"><span class="conn">' + (last ? '   ' : '|  ') + '</span><span class="gut"></span><span class="why">' + esc(w.why) + '</span></div>';
+            if (scene.helper) trail += '<div class="row helper"><span class="conn">' + (last ? '   ' : '|  ') + '</span><span class="gut"></span><span>&gt; helper: ' + esc(scene.helper) + ' …</span></div>';
+          }
+          if (s.id === scene.plane && scene.retry) {
+            trail += '<div class="row"><span class="conn">|  </span><span class="gut"></span><span class="new">retry ' + scene.retry + '</span></div>';
+          }
+          var edit = editFor(s.id);
+          if (edit) trail += '<div class="row"><span class="conn">' + (last ? '   ' : '|  ') + '</span><span class="gut"></span><span>you changed this · ' + badge(edit) + '</span></div>';
+          if (state.open === s.id) trail += editorHtml(s, scene);
+        });
+      }
+      trail += '<div class="row conn">|</div>';
+      if (wi === 2 && !decisionPlaced) { trail += decisionHtml(scene); decisionPlaced = true; }
+    });
+    state.edits.filter(function (e) { return e.kind === 'addWp'; }).forEach(function (e) {
+      trail += '<div class="row"><span class="glyph">o</span>&nbsp;&nbsp;<span class="dashed">' + esc(e.text) + '</span><span class="chip dim">proposed by you</span></div>' +
+        '<div class="row"><span class="conn">|  </span><span>' + badge(e) + '</span></div><div class="row conn">|</div>';
+    });
+    var landing = scene.card === 'landed' ? '<span class="gut" style="width:auto">' + confetti() + '</span>' : '';
+    trail += '<div class="row"><span>⚑</span>&nbsp;&nbsp;<span>Landing: everything checked</span>' + landing + '</div>';
+
+    var foot = '<div class="row rule">' + '-'.repeat(45) + '</div><div class="spread"><span class="dim">' +
+      (scene.minutes ? scene.minutes + ' min' : 'not started') + (scene.last ? ' · Claude last checked in ' + scene.last + ' ago' : '') + '</span>' +
+      '<span><button class="pbtn ghost" data-act="details" aria-pressed="' + state.details + '">' + (state.details ? 'hide details' : 'details') + '</button></span></div>';
+
+    paneEl.innerHTML = head + cardHtml(scene) + trail + foot;
+    sceneEl.innerHTML = esc(scene.label) + '<small>' + scene.sub + '</small>';
+    document.getElementById('prev').disabled = state.scene === 0;
+    document.getElementById('next').textContent = state.scene === SCENES.length - 1 ? 'Fly again ↺' : 'Next ▶';
+  }
+
+  function confetti() {
+    var bits = '';
+    var colors = ['#D97757', '#1F5C9E', '#2B744A', '#A3216B', '#E3A647'];
+    for (var i = 0; i < 8; i++) {
+      var x = 3 + i * 3.4, c = colors[i % colors.length];
+      bits += '<rect x="' + x + '" y="24" width="2.2" height="3.2" fill="' + c + '">' +
+        (reduceMotion ? '' : '<animate attributeName="y" values="24;-6" dur="' + (1 + (i % 3) * 0.3) + 's" begin="' + (i * 0.08) + 's" repeatCount="3"/><animate attributeName="opacity" values="1;0" dur="' + (1 + (i % 3) * 0.3) + 's" begin="' + (i * 0.08) + 's" repeatCount="3"/>') + '</rect>';
+    }
+    return '<svg viewBox="0 0 32 32" width="26" height="26" role="img" aria-label="confetti">' + bits + '</svg>';
+  }
+
+  function countdown() {
+    clearInterval(timer);
+    if (state.scene !== 0) return;
+    timer = setInterval(function () {
+      if (state.scene !== 0 || state.held) return;
+      state.countdown -= 1;
+      if (state.countdown <= 0) { go(1); return; }
+      render();
+    }, 1000);
+  }
+
+  function go(to) {
+    var before = SCENES[state.scene];
+    state.scene = (to + SCENES.length) % SCENES.length;
+    state.open = null; state.decisionOpen = false;
+    if (state.scene === 0) { state.countdown = 30; state.held = false; state.edits = []; state.kept = false; state.switched = null; }
+    var now = SCENES[state.scene];
+    var newly = ALL.some(function (s) { return now.st[s.id] === 'checked' && before.st[s.id] !== 'checked'; });
+    if (newly) tick(1320);
+    if (now.card === 'ask') tick(660);
+    if (now.card === 'landed') { tick(990); setTimeout(function () { tick(1320); }, 140); setTimeout(function () { tick(1760); }, 280); }
+    state.edits.forEach(function (e) { if (editState(e) === 'acked' && !e.toasted) { e.toasted = true; toast('Claude acknowledged your change: ' + e.label); } });
+    render();
+    countdown();
+  }
+
+  function addEdit(kind, target, text, label) {
+    state.edits.push({ n: state.nextEdit++, kind: kind, target: target, text: text, label: label, at: state.scene });
+  }
+
+  paneEl.addEventListener('click', function (ev) {
+    var btn = ev.target.closest('[data-act]');
+    if (!btn) return;
+    var act = btn.getAttribute('data-act');
+    var id = btn.getAttribute('data-id');
+    var scene = SCENES[state.scene];
+    if (state.scene === 0 && act !== 'next') { state.held = true; }
+    if (act === 'next') { go(state.scene + 1); return; }
+    if (act === 'hold') { state.held = true; }
+    if (act === 'open') { state.open = state.open === id ? null : id; state.decisionOpen = false; }
+    if (act === 'expand') { ROUTE.forEach(function (w) { if (w.id === id) w.open = !w.open; }); }
+    if (act === 'close') { state.open = null; state.decisionOpen = false; }
+    if (act === 'review') { state.decisionOpen = true; state.open = null; }
+    if (act === 'keep') { state.kept = true; state.decisionOpen = false; toast('Kept NextAuth; nothing sent to Claude'); }
+    if (act === 'switch') { state.switched = 'Clerk'; state.decisionOpen = false; addEdit('switch', 'd1', 'Clerk', 'switch to Clerk'); toast('Queued: switch to Clerk. Claude redoes "Remember the login" after this step'); }
+    if (act === 'edit') {
+      var kind = btn.getAttribute('data-kind');
+      var step = ALL.filter(function (s) { return s.id === id; })[0];
+      if (kind === 'rename') {
+        var input = document.getElementById('rename-' + id);
+        var text = input ? input.value.trim() : '';
+        if (text && text !== step.title) { addEdit('rename', id, text, 'renamed "' + step.title + '"'); toast('Changed on the map; Claude sees it after this step'); }
+      } else if (kind === 'redo') {
+        addEdit('redo', id, step.title, 'redo "' + step.title + '"'); toast('Queued: redo "' + step.title + '"');
+      } else {
+        addEdit(kind, id, step.title, (kind === 'remove' ? 'removed "' : 'skipped "') + step.title + '"');
+        toast((kind === 'remove' ? 'Removed' : 'Skipped') + ' on the map; Claude sees it after this step');
+      }
+      state.open = null;
+    }
+    if (act === 'stopNow') {
+      if (btn.getAttribute('data-armed') === '1') { toast('Stopped. Claude will check for half-finished edits, then re-plan'); state.open = null; }
+      else { btn.setAttribute('data-armed', '1'); btn.textContent = 'Press again: stops editing session.ts mid-way'; return; }
+    }
+    if (act === 'undo') {
+      var n = Number(btn.getAttribute('data-edit'));
+      state.edits = state.edits.filter(function (e) {
+        if (e.n !== n) return true;
+        if (e.kind === 'switch') state.switched = null;
+        return false;
+      });
+      toast('Undone before Claude saw it');
+    }
+    if (act === 'skipNow') { addEdit('skip', scene.plane, '', 'skipped the stuck step'); toast('Skipped; Claude moves on after this attempt'); }
+    if (act === 'addWp') { addEdit('addWp', 'new-' + state.nextEdit, 'Let people reset their password', 'added a feature'); toast('Added as "proposed by you" until Claude plans it'); }
+    if (act === 'details') { state.details = !state.details; }
+    if (act === 'toast') { toast(btn.getAttribute('data-text')); }
+    render();
+  });
+  paneEl.addEventListener('keydown', function (ev) {
+    if (ev.key === 'Enter' && ev.target.tagName === 'INPUT') {
+      var id = ev.target.id.replace('rename-', '');
+      var save = paneEl.querySelector('[data-act="edit"][data-kind="rename"][data-id="' + id + '"]');
+      if (save) save.click();
+    }
+  });
+
+  document.getElementById('next').addEventListener('click', function () { go(state.scene + 1); });
+  document.getElementById('prev').addEventListener('click', function () { if (state.scene > 0) go(state.scene - 1); });
+  document.getElementById('sound').addEventListener('click', function () {
+    state.sound = !state.sound;
+    this.setAttribute('aria-pressed', String(state.sound));
+    this.textContent = 'Sound: ' + (state.sound ? 'on' : 'off');
+    if (state.sound) tick(1320);
+  });
+
+  render();
+  countdown();
+})();
+</script>

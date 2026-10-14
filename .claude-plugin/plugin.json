@@ -1,0 +1,16 @@
+{
+  "name": "flightplan",
+  "version": "1.0.0",
+  "description": "A live flight-plan map of what Claude is doing: the whole route, a plane on the current step, and click-to-change steps and decisions",
+  "author": { "name": "Sree Aravinth V" },
+  "homepage": "https://github.com/aravinth01/flightplan",
+  "repository": "https://github.com/aravinth01/flightplan",
+  "license": "MIT",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "departure": { "type": "string", "title": "Departure", "description": "Before Claude starts a new route: a countdown you can hold, wait for Take off, or go at once", "options": ["countdown", "go", "auto"], "default": "countdown" },
+    "countdownSeconds": { "type": "number", "title": "Countdown seconds", "description": "How long the departure countdown waits", "default": 30 },
+    "sounds": { "type": "string", "title": "Sounds", "description": "Ticks, chimes, the knock and the landing fanfare", "options": ["all", "important", "off"], "default": "all" },
+    "fun": { "type": "string", "title": "Plane", "description": "The animated plane, or calm text marks", "options": ["full", "calm"], "default": "full" }
+  }
+}
