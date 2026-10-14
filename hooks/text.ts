@@ -63,7 +63,7 @@ export const WORDS = {
   'card.holding.idle': { fun: 'Your move: reply in the chat, or hit Continue.', plain: 'Your turn: reply in the chat, or press Continue.' },
   'card.holding.blocked': { fun: '{n} step{s} stuck. {idle}', plain: '{n} step{s} blocked. {idle}' },
   'card.holding.unclosed': {
-    fun: 'Claude stopped, but {n} step{s} still show as open on the map. {idle}',
+    fun: 'Claude stopped, but the map still shows {n} step{s} open. {idle}',
     plain: 'Claude stopped with {n} step{s} not marked finished on the map. {idle}',
   },
 
@@ -84,7 +84,7 @@ export const WORDS = {
     fun: 'Touchdown, we ate. Receipts on {checked} step{s}; you checked or skipped {yours}.',
     plain: 'Landed. Tests checked {checked} step{s}; you checked or skipped {yours}.',
   },
-  'card.landed.headline.untested': { fun: 'Landed. {n} step{s} still need receipts.', plain: 'Landed. {n} step{s} not tested yet.' },
+  'card.landed.headline.untested': { fun: 'Landed. No receipts yet on {n} step{s}.', plain: 'Landed. {n} step{s} not tested yet.' },
   'card.landed.headline.yours': {
     fun: 'Landed. You checked or skipped {n} step{s}, no receipts yet.',
     plain: 'Landed. You checked or skipped {n} step{s}; no test checked them.',
@@ -123,7 +123,7 @@ export const WORDS = {
   // Verified with the person's sign-offs (R6): receipts on some steps, the
   // person checked or skipped the rest. Never "all receipts".
   'stop.chip.checkedYours': { fun: 'receipts + your sign-off', plain: 'tested + your sign-off' },
-  'stop.chip.untested':{ fun: 'done, no receipts yet', plain: 'done, not tested yet' },
+  'stop.chip.untested': { fun: 'done, no receipts yet', plain: 'done, not tested yet' },
   'stop.chip.failed': { fun: 'tests say nope', plain: 'a test failed' },
   'stop.chip.position': same('step {pos} of {n}'),
   'stop.chip.count': same('{n} step{s}'),
@@ -196,7 +196,7 @@ export const WORDS = {
     fun: 'Touchdown, we ate. Receipts on {checked} step{s}; you checked or skipped {yours} ✈️',
     plain: 'Landed: tests checked {checked} step{s}; you checked or skipped {yours}.',
   },
-  'toast.landed.untested': { fun: 'Landed. {n} step{s} still need receipts.', plain: 'Landed: {n} step{s} not tested yet.' },
+  'toast.landed.untested': { fun: 'Landed. No receipts yet on {n} step{s}.', plain: 'Landed: {n} step{s} not tested yet.' },
   'toast.landed.failing': same('Landed, but the last test run had {n} failing.'),
   'toast.blockedLeft': { fun: "Everything's done except {n} stuck. Check the map.", plain: 'Every step is done except {n} blocked. See the map.' },
 

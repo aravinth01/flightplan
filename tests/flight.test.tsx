@@ -193,7 +193,7 @@ describe('a fun-voice flight tells only what the map saw', () => {
     expect(JSON.stringify(await ui.find({ key: 'card-landed' }))).toContain('LANDED')
     expect(/TOUCHDOWN|we ate/.test(JSON.stringify(await ui.drawn()))).toBe(false)
     expect(world.sounds).toEqual(['fx/tick.wav', 'fx/chime.wav'])
-    expect(world.toasts.at(-1)).toMatch(/^Landed\. 1 step .*receipts/)
+    expect(world.toasts.at(-1)).toBe("Landed. No receipts yet on 1 step.")
     expect(world.toasts.some(text => /we ate|touchdown/i.test(text))).toBe(false)
     await ui.unmount()
   })

@@ -294,7 +294,7 @@ describe('landing words', () => {
         expect(JSON.stringify(words)).not.toMatch(/we ate|touchdown|✅/i)
       }
     }
-    expect(landingWords(landed([step('s1', 'checked', 'seen'), step('s2', 'done'), step('s3', 'done')]), 'fun').headline).toBe('Landed. 2 steps still need receipts.')
+    expect(landingWords(landed([step('s1', 'checked', 'seen'), step('s2', 'done'), step('s3', 'done')]), 'fun').headline).toBe('Landed. No receipts yet on 2 steps.')
     expect(landingWords(landed([step('s1', 'checked', 'seen'), step('s2', 'skipped', 'claude')]), 'plain').headline).toBe('Landed. Claude skipped 1 step.')
     expect(landingWords(landed([step('s1', 'checked', 'you')]), 'plain').headline).toBe('Landed. You checked or skipped 1 step; no test checked them.')
   })

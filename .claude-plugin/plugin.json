@@ -1,6 +1,6 @@
 {
   "name": "flightplan",
-  "version": "2.0.0-rc.1",
+  "version": "2.0.0",
   "description": "A live flight-plan map of what Claude is doing: the whole route, a plane on the current step, and click-to-change steps and decisions",
   "author": { "name": "Sree Aravinth V" },
   "homepage": "https://github.com/aravinth01/flightplan",
