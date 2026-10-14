@@ -28,6 +28,8 @@ export type Step = {
   note?: string
   /** Who removed it: the person on the map, or Claude with patch drop. */
   removedBy?: 'you' | 'claude'
+  /** When a test run the map saw passed for this step (v2; never set by "I checked it"). */
+  checkedAt?: number
 }
 
 export type Feature = { id: string; title: string; why: string; proposedBy?: 'you' }
@@ -77,6 +79,10 @@ export type Route = {
   doing: string
   /** When the plane last moved, for the flying pose. */
   movedAt: number
+  /** The step the plane left when it last moved (v2: the glide, or a U-turn back for a redo). */
+  planeFrom?: string | null
+  /** When the gate opened and the flight took off (v2: the take-off moment). */
+  takeoffAt?: number
   setAt: number
   lastClaudeAt: number
   gate: 'waiting' | 'held' | 'go'
@@ -100,11 +106,17 @@ export type Live = {
   errorsInRow: number
   /** Failed test runs in a row on the step the plane is on. */
   failedRuns: number
-  helpers: { id: string; description: string; isDone: boolean }[]
+  helpers: { id: string; description: string; isDone: boolean; startedAt?: number; doneAt?: number; isError?: boolean }[]
   celebrateUntil: number
   cost: number | null
   contextPercent: number | null
   heldTurnEnd: boolean
+  /**
+   * When the sky last changed with no event time of its own (the turn
+   * ended, a question was answered, a route call redrew a pin): scene.ts
+   * drops a running one-shot there instead of replaying it.
+   */
+  changedAt?: number
 }
 
 export type View = {

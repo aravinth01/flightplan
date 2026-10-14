@@ -27,6 +27,49 @@ export const isSkippedByYou = (step: Step) => step.status === 'skipped' && step.
 
 export type Answer = { result: Record<string, unknown>; context: string[] }
 
+// ---------------------------------------------------------------- honesty
+
+// Receipts: a test run the map saw pass for this step. "I checked it" (the
+// person) and "Claude says done" are closed, never receipts.
+export const hasReceipts = (step: Step) => step.status === 'checked' && step.doneBy !== 'you'
+
+// How a landing is told. party: every live step checked (or skipped by the
+// person), at least one with receipts, nothing Claude skipped, last run green.
+// amber: the last test run failed, or a step is failing. quiet: the rest.
+export type Landing = 'party' | 'quiet' | 'amber'
+
+export function landingOf(route: Route): Landing {
+  const live = route.steps.filter(LIVE)
+  if ((route.tests?.failed ?? 0) > 0 || live.some(step => step.status === 'failed')) return 'amber'
+  const isAllChecked = live.length > 0 && live.every(step => step.status === 'checked' || isSkippedByYou(step))
+
+  return isAllChecked && live.some(hasReceipts) ? 'party' : 'quiet'
+}
+
+// The same rule for one stop (feature): its flag turns green and the chime
+// plays only when every live step in it is checked, with receipts.
+export function isStopVerified(route: Route, featureId: string): boolean {
+  const live = route.steps.filter(step => LIVE(step) && step.featureId === featureId)
+
+  return live.length > 0 && live.every(step => step.status === 'checked' || isSkippedByYou(step)) && live.some(hasReceipts)
+}
+
+// checkedAt is when a step's receipts landed (the sky stamps that pin). It
+// lives only while the step still has them: a later failing run, a redo, a
+// skip, a fresh write or Claude starting the step again all clear it.
+function clearStaleChecks(route: Route) {
+  for (const step of route.steps) if (step.checkedAt !== undefined && !hasReceipts(step)) delete step.checkedAt
+}
+
+// Every move of the plane records the step it left and when, so the sky can
+// draw the glide (or the U-turn back for a redo). No move, no change.
+function fly(route: Route, to: string | null, now: number) {
+  if (route.plane === to) return
+  route.planeFrom = route.plane
+  route.plane = to
+  route.movedAt = now
+}
+
 export function newRoute(now: number): Route {
   return {
     version: 0,
@@ -51,9 +94,13 @@ export function newRoute(now: number): Route {
   }
 }
 
-const text = (value: unknown, max = 200) => (typeof value === 'string' ? value.trim().slice(0, max) : '')
+// Control characters (a pasted terminal escape, DEL, C1) make the engine
+// refuse a whole drawing and are not XML: they never enter the route. Tab,
+// newline and carriage return draw fine and stay.
+export const printable = (value: string) => value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F]/g, '')
+const text = (value: unknown, max = 200) => (typeof value === 'string' ? printable(value).trim().slice(0, max) : '')
 const list = (value: unknown) => (Array.isArray(value) ? value : [])
-const ids = (value: unknown) => (typeof value === 'string' ? [value] : list(value).filter((one): one is string => typeof one === 'string'))
+const ids = (value: unknown) => (typeof value === 'string' ? [value] : list(value).filter((one): one is string => typeof one === 'string')).map(printable)
 const indexOf = (route: Route, id: string | null) => (id === null ? -1 : route.steps.findIndex(step => step.id === id))
 const stepOf = (route: Route, id: string) => route.steps.find(step => step.id === id)
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
@@ -94,11 +141,16 @@ function nextOpen(route: Route, after: string | null) {
   return route.steps.slice(from + 1).find(step => step.status === 'pending' || step.status === 'active') ?? route.steps.find(step => step.status === 'pending' || step.status === 'active')
 }
 
-// A landed route reopens when there is new work on it.
-function reopen(route: Route) {
+// A landed route reopens when there is new work on it. The plane leaves the
+// runway for the open step as a recorded move (planeFrom stays the step it
+// landed from), so the sky flies it back instead of jumping.
+function reopen(route: Route, now: number) {
   if (route.landedAt === 0) return
   route.landedAt = 0
-  route.plane = route.plane ?? nextOpen(route, null)?.id ?? null
+  const to = route.plane ?? nextOpen(route, null)?.id ?? null
+  if (to === route.plane) return
+  route.plane = to
+  route.movedAt = now
 }
 
 // ---------------------------------------------------------------- set
@@ -159,6 +211,7 @@ export function applySet(previous: Route | null, input: Record<string, unknown>,
         step.doneBy = before.doneBy
         step.claim = before.claim
         step.removedBy = before.removedBy
+        if (before.checkedAt !== undefined) step.checkedAt = before.checkedAt
         if (hasUserTitle(previous, before.id)) step.title = before.title
       }
       if (removedByYou.some(one => same(one.title, step.title))) {
@@ -186,6 +239,7 @@ export function applySet(previous: Route | null, input: Record<string, unknown>,
   route.goal = text(input.goal, 120) || route.goal || features[0]?.title || 'This task'
   route.features = features
   route.steps = steps
+  clearStaleChecks(route)
   route.version += 1
   route.lastClaudeAt = now
   if (!isReplace) route.setAt = now
@@ -199,6 +253,9 @@ export function applySet(previous: Route | null, input: Record<string, unknown>,
     : options.isApproved || isSmall || options.departure === 'auto'
       ? 'go'
       : 'waiting'
+  // A gate that opens at once is the take-off; one that waits takes off
+  // when the person presses Take off (register.tsx).
+  if (!isReplace && route.gate === 'go') route.takeoffAt = now
   const first = steps.find(step => step.status === 'pending' || step.status === 'active')
   const context: string[] = []
   if (route.gate === 'waiting' || route.gate === 'held') {
@@ -254,16 +311,27 @@ export function applyStep(route: Route, input: Record<string, unknown>, now: num
       refused.push(`${id} "${step.title}" (${step.status === 'removed' ? 'removed' : 'skipped'} by the user)`)
       continue
     }
-    if (outcome === 'skipped') step.status = 'skipped'
-    else if (outcome === 'blocked') step.status = 'blocked'
-    else if (step.status !== 'checked') step.status = isSeenPass && isTestCommand(step.check) ? 'checked' : 'done'
+    // Only a pass the map saw makes receipts (stamped now). Claude's word
+    // alone never turns the person's "I checked it" into receipts, and
+    // Claude's skip never reads as the person's.
+    const isPass = outcome === 'done' && isSeenPass && isTestCommand(step.check)
+    const isYours = step.status === 'checked' && step.doneBy === 'you'
+    if (outcome === 'skipped') {
+      step.status = 'skipped'
+      step.doneBy = 'claude'
+    } else if (outcome === 'blocked') step.status = 'blocked'
+    else if (isPass && !hasReceipts(step)) {
+      step.status = 'checked'
+      step.checkedAt = now
+    } else if (step.status !== 'checked') step.status = 'done'
     if (outcome === 'done') {
-      step.doneBy = step.doneBy === 'seen' ? 'seen' : 'claude'
+      step.doneBy = step.doneBy === 'seen' ? 'seen' : isYours && !isPass ? 'you' : 'claude'
       step.claim = evidence || 'none'
     }
     step.note = text(input.note, 160) || step.note
     finished.push({ id: step.id, title: step.title, status: step.status })
   }
+  clearStaleChecks(route)
   if (refused.length > 0) context.push(`Not changed: ${refused.join('; ')}.`)
 
   if (typeof input.start === 'string' && input.start !== '') {
@@ -284,8 +352,9 @@ export function applyStep(route: Route, input: Record<string, unknown>, now: num
       }
     }
     if (step.status !== 'active') step.status = 'active'
-    reopen(route)
+    reopen(route, now)
     moveTo(route, step.id, now, 'claude')
+    clearStaleChecks(route)
   }
   route.doing = text(input.doing, 80) || route.doing
   route.lastClaudeAt = now
@@ -320,8 +389,7 @@ function moveTo(route: Route, id: string, now: number, by: 'claude' | 'seen') {
     const hasOpenWork = between.some(step => step.written.length > 0 && !isClosed(step))
     if (!isRework && hasOpenWork) return
   }
-  route.plane = id
-  route.movedAt = now
+  fly(route, id, now)
 }
 
 // ---------------------------------------------------------------- patch, decide, get
@@ -373,7 +441,7 @@ export function applyPatch(route: Route, input: Record<string, unknown>, now: nu
   if (list(input.add).length > 0) {
     route.addedCount = list(input.add).length
     route.addedAt = now
-    reopen(route)
+    reopen(route, now)
   }
 
   for (const id of ids(input.drop)) {
@@ -474,8 +542,7 @@ export function routeView(route: Route): Record<string, unknown> {
 // When the plane's own step is removed or skipped, the plane moves on.
 function movePlaneOff(route: Route, id: string, now: number) {
   if (route.plane !== id) return
-  route.plane = nextOpen(route, id)?.id ?? null
-  route.movedAt = now
+  fly(route, nextOpen(route, id)?.id ?? null, now)
 }
 
 // An edit lands on the map at once (the person's version wins) and waits as
@@ -491,15 +558,16 @@ export function userEdit(route: Route, kind: EditKind, target: string, value: st
   switch (kind) {
     case 'rename': {
       const node = step ?? feature
-      if (node === undefined || value.trim() === '' || value.trim() === node.title) return undefined
+      const name = printable(value).trim()
+      if (node === undefined || name === '' || name === node.title) return undefined
       before = snapshot({ title: node.title })
-      node.title = value.trim().slice(0, 80)
+      node.title = name.slice(0, 80)
       summary = `renamed ${step !== undefined ? 'step' : 'waypoint'} ${target} from "${JSON.parse(before).title}" to "${node.title}"`
       break
     }
     case 'skip': {
       if (step === undefined) return undefined
-      before = snapshot({ status: step.status, doneBy: step.doneBy })
+      before = snapshot({ status: step.status, doneBy: step.doneBy, checkedAt: step.checkedAt })
       step.status = 'skipped'
       step.doneBy = 'you'
       summary =
@@ -511,37 +579,42 @@ export function userEdit(route: Route, kind: EditKind, target: string, value: st
     }
     case 'remove': {
       if (step !== undefined) {
-        before = snapshot({ status: step.status, removedBy: step.removedBy })
+        before = snapshot({ status: step.status, removedBy: step.removedBy, checkedAt: step.checkedAt })
         step.status = 'removed'
         step.removedBy = 'you'
         summary = `removed step ${target} "${step.title}": do not implement it`
         movePlaneOff(route, target, now)
       } else if (feature !== undefined) {
         before = snapshot({ steps: featureSteps(route, target).map(one => [one.id, one.status, one.removedBy ?? '']) })
+        const was = route.plane
         for (const one of featureSteps(route, target)) {
           if (isClosed(one)) continue
           one.status = 'removed'
           one.removedBy = 'you'
           movePlaneOff(route, one.id, now)
         }
+        // The plane left the step it was on, not one it hopped through.
+        if (route.plane !== was) route.planeFrom = was
         summary = `removed waypoint ${target} "${feature.title}" and its unfinished steps: do not implement them`
       } else return undefined
       break
     }
     case 'redo': {
       if (step === undefined) return undefined
-      before = snapshot({ status: step.status, note: step.note ?? '' })
+      before = snapshot({ status: step.status, note: step.note ?? '', checkedAt: step.checkedAt })
       step.status = 'pending'
       step.note = 'you asked for a redo'
       summary = `asked to redo step ${target} "${step.title}"${value === '' ? '' : `: ${value}`}`
-      reopen(route)
+      reopen(route, now)
       break
     }
     case 'checked': {
       if (step === undefined) return undefined
-      before = snapshot({ status: step.status, doneBy: step.doneBy })
+      before = snapshot({ status: step.status, doneBy: step.doneBy, checkedAt: step.checkedAt })
+      // The person's word, never receipts: no checkedAt, no stamp. It does
+      // not take away receipts a step already has either.
+      if (!hasReceipts(step)) step.doneBy = 'you'
       step.status = 'checked'
-      step.doneBy = 'you'
       summary = `checked step ${target} "${step.title}" themselves: it works`
       break
     }
@@ -554,12 +627,13 @@ export function userEdit(route: Route, kind: EditKind, target: string, value: st
       break
     }
     case 'add-feature': {
-      if (value.trim() === '') return undefined
+      const name = printable(value).trim()
+      if (name === '') return undefined
       const id = `u${route.nextEdit}`
-      route.features.push({ id, title: value.trim().slice(0, 80), why: '(Claude will plan this)', proposedBy: 'you' })
-      summary = `added a waypoint "${value.trim()}" at the end: plan its steps with patch add (featureTitle "${value.trim()}")`
+      route.features.push({ id, title: name.slice(0, 80), why: '(Claude will plan this)', proposedBy: 'you' })
+      summary = `added a waypoint "${name}" at the end: plan its steps with patch add (featureTitle "${name}")`
       target = id
-      reopen(route)
+      reopen(route, now)
       break
     }
     case 'pause': {
@@ -593,6 +667,7 @@ export function userEdit(route: Route, kind: EditKind, target: string, value: st
     route.edits = [...route.edits, edit]
     route.nextEdit += 1
   }
+  clearStaleChecks(route)
   route.version += 1
 
   return edit
@@ -614,6 +689,7 @@ export function undoEdit(route: Route, editId: string): boolean {
     if ('doneBy' in was) step.doneBy = was.doneBy as Step['doneBy']
     if ('removedBy' in was) step.removedBy = was.removedBy as Step['removedBy']
     if ('note' in was) step.note = was.note === '' ? undefined : (was.note as string)
+    if (typeof was.checkedAt === 'number') step.checkedAt = was.checkedAt
   }
   if (edit.kind === 'remove' && feature !== undefined && Array.isArray(was.steps)) {
     for (const [id, status, by] of was.steps as [string, StepStatus, string][]) {
@@ -632,6 +708,7 @@ export function undoEdit(route: Route, editId: string): boolean {
   if (edit.kind === 'add-feature') route.features = route.features.filter(one => one.id !== edit.target)
   if (edit.kind === 'pause') route.isPaused = false
   route.edits = route.edits.filter(one => one.id !== editId)
+  clearStaleChecks(route)
   route.version += 1
 
   return true
@@ -726,7 +803,7 @@ export function seeWrite(route: Route, path: string, now: number): WriteSeen {
       step.doneBy = 'seen'
     }
   }
-  reopen(route)
+  reopen(route, now)
   const from = indexOf(route, route.plane)
   const to = indexOf(route, target.id)
   let moved = false
@@ -737,10 +814,10 @@ export function seeWrite(route: Route, path: string, now: number): WriteSeen {
         step.doneBy = 'seen'
       }
     }
-    route.plane = target.id
-    route.movedAt = now
+    fly(route, target.id, now)
     moved = true
   }
+  clearStaleChecks(route)
 
   return { kind: 'step', stepId: target.id, moved }
 }
@@ -819,15 +896,19 @@ export function seeTestRun(route: Route, command: string, summary: TestSummary, 
     if (!isCheckOnly && !isTouched) return
     if (summary.isOk === true) {
       const isReady = isCheckOnly ? !route.steps.slice(0, index).some(one => one.status === 'pending' && LIVE(one)) : allWritten(step)
-      if (isReady && step.status !== 'checked') {
+      if (isReady && !hasReceipts(step)) {
+        // Receipts, stamped now. A pass the map saw outranks the person's
+        // "I checked it", whether it still stands or a failing run undid it.
         step.status = 'checked'
-        step.doneBy = step.doneBy ?? 'seen'
+        step.doneBy = step.doneBy === 'claude' ? 'claude' : 'seen'
+        step.checkedAt = now
         changed.push(step.id)
       } else if (!isReady && step.status === 'failed') {
         step.status = 'active'
       }
     } else if (step.status === 'checked' || step.status === 'done') {
       step.status = 'failed'
+      delete step.checkedAt
       changed.push(step.id)
     }
   })
@@ -861,7 +942,7 @@ export function reconcile(route: Route, now: number): { open: Step[]; hasLanded:
   const hasLanded = live.length > 0 && open.length === 0 && !isWaiting && route.landedAt === 0
   if (hasLanded) {
     route.landedAt = Math.max(1, now)
-    route.plane = null
+    fly(route, null, now)
   }
 
   return { open, hasLanded, blocked }

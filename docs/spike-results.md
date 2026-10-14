@@ -96,3 +96,23 @@ The in-app spike (`flightplan-spike` pane, needs hot reloading) covers pane plac
 height and SMIL animation, hover cards, sound, toast and `$.ui.log` visibility, hotkeys and Input focus,
 `$.ui.scroll`, the band, the Spinner rewrite, the send-now and hidden-note round trips, `$.model.fork`, the
 Client region, and whether the three bypassed events reach a mod in the desktop session.
+
+## 6. v2 lab results (desktop app, 2026-10-14)
+
+`/flight lab` drew test pictures in the real Claude desktop app (a 63-column docked pane). The person tapped
+the first answers, then asked to go ahead without the rest; the open questions were settled by the engine's
+documented behaviour and the safest choice.
+
+| Check | Result | Decision |
+| --- | --- | --- |
+| S2 animation survives redraws (the go/no-go) | **Pass**: a byte-identical source kept its 10 s sweep through Text changes every second (A) and alt changes every second (B) | Full animated plan. Scene sources are memoized and byte-stable between real events. |
+| S2 sibling appears/disappears above it (C, D) | not answered | Keep the sky in a keyed Box as the root's first child (R19) and v1's `''` placeholders. |
+| S1 sizing | **Only explicit `width`/`height` props filled the pane** (way 4: `bodyColumns × 8 × 0.98` px). Markup width, viewBox-only and `width="100%"` did not. | `SIZING = 'explicit'`: px width from `bodyColumns`, an integer px-per-unit scale, viewBox sized to match (see `hooks/scene.ts`). A resize redraws with new props (the only restart). |
+| Box widths | the validator refused `width="33.333…%"` (lab unit test) | No fractional percentages. Equal shares are `width={0} flexGrow={1}`; spacers are whole cells. |
+| S3 crisp pixels, light/dark | not answered | `shape-rendering="crispEdges"` with an integer px-per-unit scale (no seams by construction). The banner carries its own colors and a keyline frame; no `prefers-color-scheme`. |
+| S4 what the scrub keeps | not answered | Use none of `<use>`, `<pattern>`, `<clipPath>`, `<style>`, CSS `:hover`, `<text>`, `href`. `<title>` only for stop tooltips (harmless if stripped; alt says the same). |
+| S5 animation vocabulary | not answered | Only what v1's plane already proved on desktop: `animate` (opacity, visibility, fill), `animateTransform` (translate, scale, rotate) with `values`/`keyTimes`/`keySplines`, `calcMode` discrete/linear/spline, `additive="sum"`, `begin` ≥ 0, `fill="freeze"`, `repeatCount`. No `animateMotion`, no `<set>`, no negative `begin` (cloud phase is a static `translate` on an outer group). |
+| S7 signs under towers | not answered | Signs row = a whole-cell left spacer + N equal flex shares + right spacer, in a Box as wide as the banner. |
+| S8 chips, emoji, Button with Text | trees validate (lab unit test) | Chips are `Text` with `backgroundColor` + `color="inverseText"`, drawn as siblings of Buttons. Emoji budget per R13. |
+| S9 CPU | lab sampling measured the wrong app instance (the person runs a multi-profile copy) | Measured instead on the real scene in the browser pane of the same app (Phase 3). |
+| S6 Client, S10 hover | cut (R18), optional | Plain Text clock; hover only as polish. |
